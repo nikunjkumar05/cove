@@ -1,8 +1,10 @@
 use std::sync::{Arc, LazyLock};
 
+use cove_cspp::CsppStore as _;
 use flume::{Receiver, Sender};
 use parking_lot::RwLock;
 use rand::RngExt as _;
+use std::str::FromStr as _;
 use strum::IntoEnumIterator as _;
 use tracing::{error, info, warn};
 use zeroize::Zeroizing;
@@ -195,52 +197,7 @@ impl RustCloudBackupManager {
 
         let keychain = Keychain::global();
 
-        // load or create passkey credentials
-        let (credential_id, prf_salt): (Vec<u8>, [u8; 32]) = match (
-            keychain.get(CREDENTIAL_ID_KEY.to_string()),
-            keychain.get(PRF_SALT_KEY.to_string()),
-        ) {
-            (Some(cred_hex), Some(salt_hex)) => {
-                let cred = hex::decode(&cred_hex)
-                    .map_err(|e| CloudBackupError::Internal(format!("credential decode: {e}")))?;
-                let salt: [u8; 32] = hex::decode(&salt_hex)
-                    .map_err(|e| CloudBackupError::Internal(format!("salt decode: {e}")))?
-                    .try_into()
-                    .map_err(|_| CloudBackupError::Internal("prf_salt is not 32 bytes".into()))?;
-                info!("Reusing existing passkey credentials");
-                (cred, salt)
-            }
-            _ => {
-                info!("Creating new passkey");
-                let prf_salt: [u8; 32] = rand::rng().random();
-                let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
-
-                let user_id = rand::rng().random::<[u8; 16]>().to_vec();
-                let credential_id = passkey
-                    .create_passkey(RP_ID.to_string(), user_id, challenge)
-                    .map_err(|e| CloudBackupError::Passkey(e.to_string()))?;
-
-                // persist immediately so retries reuse the same passkey
-                keychain
-                    .save(CREDENTIAL_ID_KEY.to_string(), hex::encode(&credential_id))
-                    .map_err(|e| CloudBackupError::Internal(format!("save credential: {e}")))?;
-                keychain
-                    .save(PRF_SALT_KEY.to_string(), hex::encode(prf_salt))
-                    .map_err(|e| CloudBackupError::Internal(format!("save prf_salt: {e}")))?;
-
-                (credential_id, prf_salt)
-            }
-        };
-
-        // authenticate with PRF to get wrapping key
-        let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
-        let prf_output = passkey
-            .authenticate_with_prf(RP_ID.to_string(), credential_id, prf_salt.to_vec(), challenge)
-            .map_err(|e| CloudBackupError::Passkey(e.to_string()))?;
-
-        let prf_key: [u8; 32] = prf_output
-            .try_into()
-            .map_err(|_| CloudBackupError::Internal("PRF output is not 32 bytes".into()))?;
+        let (prf_key, prf_salt) = obtain_prf_key(keychain, passkey)?;
 
         // encrypt and upload master key
         let encrypted_master =
@@ -502,6 +459,54 @@ fn restore_single_wallet(
     Ok(())
 }
 
+/// Create a fresh passkey and authenticate with PRF to get the wrapping key
+///
+/// Always creates a new passkey — the enable flow re-encrypts everything,
+/// so there's no benefit to reusing stale cached credentials (which may
+/// reference a passkey deleted from the user's password manager)
+fn obtain_prf_key(
+    keychain: &Keychain,
+    passkey: &PasskeyAccess,
+) -> Result<([u8; 32], [u8; 32]), CloudBackupError> {
+    // clear any stale credentials from a previous attempt or install
+    keychain.delete(CREDENTIAL_ID_KEY.to_string());
+    keychain.delete(PRF_SALT_KEY.to_string());
+
+    info!("Creating new passkey");
+    let prf_salt: [u8; 32] = rand::rng().random();
+    let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
+    let user_id = rand::rng().random::<[u8; 16]>().to_vec();
+
+    let credential_id = passkey
+        .create_passkey(RP_ID.to_string(), user_id, challenge)
+        .map_err(|e| CloudBackupError::Passkey(e.to_string()))?;
+
+    // authenticate with PRF to derive wrapping key
+    let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
+    let prf_output = passkey
+        .authenticate_with_prf(
+            RP_ID.to_string(),
+            credential_id.clone(),
+            prf_salt.to_vec(),
+            challenge,
+        )
+        .map_err(|e| CloudBackupError::Passkey(e.to_string()))?;
+
+    let prf_key: [u8; 32] = prf_output
+        .try_into()
+        .map_err(|_| CloudBackupError::Internal("PRF output is not 32 bytes".into()))?;
+
+    // persist only after successful PRF auth
+    keychain
+        .save(CREDENTIAL_ID_KEY.to_string(), hex::encode(&credential_id))
+        .map_err(|e| CloudBackupError::Internal(format!("save credential: {e}")))?;
+    keychain
+        .save(PRF_SALT_KEY.to_string(), hex::encode(prf_salt))
+        .map_err(|e| CloudBackupError::Internal(format!("save prf_salt: {e}")))?;
+
+    Ok((prf_key, prf_salt))
+}
+
 fn convert_cloud_secret(
     secret: &cove_cspp::backup_data::WalletSecret,
 ) -> crate::backup::model::WalletSecret {
@@ -653,9 +658,6 @@ enum CloudBackupError {
     #[error("internal error: {0}")]
     Internal(String),
 }
-
-use cove_cspp::CsppStore as _;
-use std::str::FromStr as _;
 
 #[cfg(test)]
 mod tests {
