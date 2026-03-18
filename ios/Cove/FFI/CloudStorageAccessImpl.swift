@@ -92,7 +92,7 @@ final class CloudStorageAccessImpl: CloudStorageAccess, @unchecked Sendable {
             recordsToSave: [record],
             recordIDsToDelete: nil
         )
-        operation.savePolicy = .changedKeys
+        operation.savePolicy = .allKeys
         operation.modifyRecordsResultBlock = { result in
             if case let .failure(error) = result {
                 if let ckError = error as? CKError, ckError.code == .quotaExceeded {
@@ -118,8 +118,14 @@ final class CloudStorageAccessImpl: CloudStorageAccess, @unchecked Sendable {
         var fetchResult: Result<Data, CloudStorageError>!
 
         db.fetch(withRecordID: recordID) { record, error in
-            if let record, let data = record[Self.dataField] as? Data {
-                fetchResult = .success(data)
+            if let record {
+                if let data = record[Self.dataField] as? Data {
+                    fetchResult = .success(data)
+                } else {
+                    fetchResult = .failure(
+                        .DownloadFailed("record '\(recordId)' exists but data field is nil")
+                    )
+                }
             } else if let ckError = error as? CKError {
                 switch ckError.code {
                 case .unknownItem:

@@ -85,11 +85,22 @@ impl Keychain {
 
     /// Load existing local DB encryption key, returns None if not found
     pub fn get_local_encryption_key(&self) -> Result<Option<[u8; 32]>, KeychainError> {
-        let Some(cryptor_str) = self.0.get(LOCAL_DB_KEY_CRYPTOR.into()) else {
-            return Ok(None);
-        };
-        let Some(encrypted) = self.0.get(LOCAL_DB_KEY_NAME.into()) else {
-            return Ok(None);
+        let has_cryptor = self.0.get(LOCAL_DB_KEY_CRYPTOR.into());
+        let has_key = self.0.get(LOCAL_DB_KEY_NAME.into());
+
+        let (cryptor_str, encrypted) = match (has_cryptor, has_key) {
+            (None, None) => return Ok(None),
+            (Some(c), Some(k)) => (c, k),
+            (Some(_), None) => {
+                return Err(KeychainError::Decrypt(
+                    "encryption key cryptor found but encrypted key is missing".into(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(KeychainError::Decrypt(
+                    "encrypted key found but cryptor is missing".into(),
+                ));
+            }
         };
 
         let cryptor = Cryptor::try_from_string(&cryptor_str)
@@ -120,9 +131,22 @@ impl Keychain {
             cryptor.encrypt_to_string(&hex).map_err(|e| KeychainError::Encrypt(e.to_string()))?;
 
         self.0.save(LOCAL_DB_KEY_CRYPTOR.into(), cryptor.serialize_to_string())?;
-        self.0.save(LOCAL_DB_KEY_NAME.into(), encrypted)?;
+
+        if let Err(e) = self.0.save(LOCAL_DB_KEY_NAME.into(), encrypted) {
+            // clean up orphaned cryptor so we don't leave partial state
+            self.0.delete(LOCAL_DB_KEY_CRYPTOR.into());
+            return Err(e);
+        }
 
         Ok(key)
+    }
+
+    /// Delete partial local encryption key entries from keychain
+    ///
+    /// Used during bootstrap recovery when one entry exists but the other is missing
+    pub fn purge_local_encryption_key(&self) {
+        self.0.delete(LOCAL_DB_KEY_CRYPTOR.into());
+        self.0.delete(LOCAL_DB_KEY_NAME.into());
     }
 
     /// Saves a wallet's mnemonic seed encrypted in the keychain
@@ -445,4 +469,130 @@ fn wallet_tap_signer_encryption_key_and_nonce_key_name(id: &WalletId) -> String 
 
 fn wallet_tap_signer_backup_key_name(id: &WalletId) -> String {
     format!("{id}::tap_signer_backup")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    #[derive(Debug)]
+    struct MockKeychain(Mutex<HashMap<String, String>>);
+
+    impl MockKeychain {
+        fn new() -> Self {
+            Self(Mutex::new(HashMap::new()))
+        }
+
+        fn with_entries(entries: Vec<(&str, &str)>) -> Self {
+            let map: HashMap<String, String> =
+                entries.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            Self(Mutex::new(map))
+        }
+    }
+
+    impl KeychainAccess for MockKeychain {
+        fn save(&self, key: String, value: String) -> Result<(), KeychainError> {
+            self.0.lock().unwrap().insert(key, value);
+            Ok(())
+        }
+
+        fn get(&self, key: String) -> Option<String> {
+            self.0.lock().unwrap().get(&key).cloned()
+        }
+
+        fn delete(&self, key: String) -> bool {
+            self.0.lock().unwrap().remove(&key).is_some()
+        }
+    }
+
+    fn make_keychain(mock: MockKeychain) -> Keychain {
+        Keychain(Arc::new(Box::new(mock)))
+    }
+
+    #[test]
+    fn get_local_encryption_key_returns_none_when_empty() {
+        let kc = make_keychain(MockKeychain::new());
+        assert!(kc.get_local_encryption_key().unwrap().is_none());
+    }
+
+    #[test]
+    fn get_local_encryption_key_errors_on_cryptor_without_key() {
+        let kc = make_keychain(MockKeychain::with_entries(vec![(
+            LOCAL_DB_KEY_CRYPTOR,
+            "some_cryptor_data",
+        )]));
+        let err = kc.get_local_encryption_key().unwrap_err();
+        assert!(matches!(err, KeychainError::Decrypt(_)));
+    }
+
+    #[test]
+    fn get_local_encryption_key_errors_on_key_without_cryptor() {
+        let kc = make_keychain(MockKeychain::with_entries(vec![(
+            LOCAL_DB_KEY_NAME,
+            "some_encrypted_data",
+        )]));
+        let err = kc.get_local_encryption_key().unwrap_err();
+        assert!(matches!(err, KeychainError::Decrypt(_)));
+    }
+
+    #[test]
+    fn create_and_get_local_encryption_key_roundtrip() {
+        let kc = make_keychain(MockKeychain::new());
+        let created = kc.create_local_encryption_key().unwrap();
+        let loaded = kc.get_local_encryption_key().unwrap().unwrap();
+        assert_eq!(created, loaded);
+    }
+
+    #[test]
+    fn create_local_encryption_key_cleans_up_on_second_save_failure() {
+        // simulate a keychain where the second save always fails
+        #[derive(Debug)]
+        struct FailSecondSave(Mutex<(HashMap<String, String>, u32)>);
+
+        impl KeychainAccess for FailSecondSave {
+            fn save(&self, key: String, value: String) -> Result<(), KeychainError> {
+                let mut guard = self.0.lock().unwrap();
+                guard.1 += 1;
+                if guard.1 == 2 {
+                    return Err(KeychainError::Save);
+                }
+                guard.0.insert(key, value);
+                Ok(())
+            }
+
+            fn get(&self, key: String) -> Option<String> {
+                self.0.lock().unwrap().0.get(&key).cloned()
+            }
+
+            fn delete(&self, key: String) -> bool {
+                self.0.lock().unwrap().0.remove(&key).is_some()
+            }
+        }
+
+        let mock = FailSecondSave(Mutex::new((HashMap::new(), 0)));
+        let kc = Keychain(Arc::new(Box::new(mock)));
+
+        let err = kc.create_local_encryption_key().unwrap_err();
+        assert!(matches!(err, KeychainError::Save));
+
+        // cryptor should have been cleaned up, leaving no partial state
+        assert!(kc.0.get(LOCAL_DB_KEY_CRYPTOR.into()).is_none());
+        assert!(kc.0.get(LOCAL_DB_KEY_NAME.into()).is_none());
+    }
+
+    #[test]
+    fn purge_local_encryption_key_removes_both_entries() {
+        let kc = make_keychain(MockKeychain::new());
+        kc.create_local_encryption_key().unwrap();
+
+        assert!(kc.0.get(LOCAL_DB_KEY_CRYPTOR.into()).is_some());
+        assert!(kc.0.get(LOCAL_DB_KEY_NAME.into()).is_some());
+
+        kc.purge_local_encryption_key();
+
+        assert!(kc.0.get(LOCAL_DB_KEY_CRYPTOR.into()).is_none());
+        assert!(kc.0.get(LOCAL_DB_KEY_NAME.into()).is_none());
+    }
 }

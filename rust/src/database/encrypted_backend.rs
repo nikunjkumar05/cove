@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use arc_swap::ArcSwapOption;
+use tracing::error;
 
 const BLOCK_SIZE: usize = 4096;
 const NONCE_LEN: usize = 24;
@@ -46,6 +47,9 @@ pub fn set_encryption_key(key: [u8; 32]) {
     let new = Arc::new(key);
     let prev = ENCRYPTION_KEY.compare_and_swap(&None::<Arc<[u8; 32]>>, Some(Arc::clone(&new)));
     if prev.is_some() {
+        if prev.as_deref() != Some(&key) {
+            error!("set_encryption_key called with a different key than the one already set");
+        }
         debug_assert_eq!(
             prev.as_deref(),
             Some(&key),

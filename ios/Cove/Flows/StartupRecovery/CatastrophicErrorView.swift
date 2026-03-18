@@ -3,8 +3,18 @@ import SwiftUI
 @_exported import CoveCore
 
 struct CatastrophicErrorView: View {
-    let onResolve: () -> Void
+    let onRestoreFromCloud: () -> Void
+    let onWipeOnly: () -> Void
 
+    enum CloudProbeState {
+        case checking
+        case available
+        case unavailable
+        case transientError
+        case corrupt
+    }
+
+    @State private var cloudProbeState: CloudProbeState = .checking
     @State private var showWipeConfirmation = false
 
     var body: some View {
@@ -26,9 +36,66 @@ struct CatastrophicErrorView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 32)
 
+            cloudProbeContent
+
             Spacer()
 
             VStack(spacing: 16) {
+                if case .available = cloudProbeState {
+                    Button {
+                        onRestoreFromCloud()
+                    } label: {
+                        HStack {
+                            Image(systemName: "icloud.and.arrow.down")
+                            Text("Restore from Cloud Backup")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
+                if case .transientError = cloudProbeState {
+                    Button {
+                        onRestoreFromCloud()
+                    } label: {
+                        HStack {
+                            Image(systemName: "icloud.and.arrow.down")
+                            Text("Restore from Cloud Backup")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Text("Network may be unstable — restore may still work")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Button {
+                        cloudProbeState = .checking
+                        probeCloud()
+                    } label: {
+                        Text("Retry Check")
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                if case .corrupt = cloudProbeState {
+                    Text("Cloud backup data may be damaged")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+
+                    Button {
+                        onRestoreFromCloud()
+                    } label: {
+                        HStack {
+                            Image(systemName: "icloud.and.arrow.down")
+                            Text("Restore from Cloud Backup")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
                 Button {
                     contactSupport()
                 } label: {
@@ -38,7 +105,7 @@ struct CatastrophicErrorView: View {
                     }
                     .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
 
                 Button(role: .destructive) {
                     showWipeConfirmation = true
@@ -52,6 +119,9 @@ struct CatastrophicErrorView: View {
             Spacer()
         }
         .padding()
+        .task {
+            probeCloud()
+        }
         .alert("Wipe All Local Data?", isPresented: $showWipeConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Wipe Data", role: .destructive) {
@@ -64,6 +134,42 @@ struct CatastrophicErrorView: View {
         }
     }
 
+    @ViewBuilder
+    private var cloudProbeContent: some View {
+        switch cloudProbeState {
+        case .checking:
+            ProgressView()
+                .padding(.top, 8)
+        case .available, .unavailable, .transientError, .corrupt:
+            EmptyView()
+        }
+    }
+
+    private func probeCloud() {
+        Task.detached {
+            let cloud = CloudStorageAccessImpl()
+            do {
+                let exists = try cloud.hasCloudBackup()
+                await MainActor.run {
+                    cloudProbeState = exists ? .available : .unavailable
+                }
+            } catch let error as CloudStorageError {
+                await MainActor.run {
+                    switch error {
+                    case .NotAvailable:
+                        cloudProbeState = .transientError
+                    default:
+                        cloudProbeState = .corrupt
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    cloudProbeState = .corrupt
+                }
+            }
+        }
+    }
+
     private func contactSupport() {
         if let url = URL(string: "mailto:feedback@covebitcoinwallet.com") {
             UIApplication.shared.open(url)
@@ -72,6 +178,6 @@ struct CatastrophicErrorView: View {
 
     private func wipeAndRestart() {
         wipeLocalData()
-        onResolve()
+        onWipeOnly()
     }
 }

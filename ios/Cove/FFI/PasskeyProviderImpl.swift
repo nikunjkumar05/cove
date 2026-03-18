@@ -181,7 +181,10 @@ private class PasskeyDelegate: NSObject, ASAuthorizationControllerDelegate,
     private var result: Result<ASAuthorizationCredential, Error>?
 
     func waitForResult() throws -> ASAuthorizationCredential {
-        semaphore.wait()
+        let status = semaphore.wait(timeout: .now() + 120)
+        if status == .timedOut {
+            throw PasskeyError.AuthenticationFailed("passkey operation timed out after 120s")
+        }
         guard let result else {
             throw PasskeyError.AuthenticationFailed("no result received from delegate")
         }

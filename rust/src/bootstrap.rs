@@ -8,7 +8,7 @@ use std::sync::{
 
 use cove_util::ResultExt;
 use parking_lot::Mutex;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[derive(uniffi::Enum, Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BootstrapStep {
@@ -253,17 +253,28 @@ fn do_bootstrap(track_progress: bool) -> Result<u32, AppInitError> {
     // load or create local DB encryption key from keychain
     let keychain = cove_device::keychain::Keychain::global();
     let encrypted_db = cove_common::consts::ROOT_DATA_DIR.join("cove.encrypted.db");
-    let key = match keychain
-        .get_local_encryption_key()
-        .map_err(|e| AppInitError::KeyDerivation(e.to_string()))?
-    {
-        Some(key) => key,
-        None => {
+    let key = match keychain.get_local_encryption_key() {
+        Ok(Some(key)) => key,
+        Ok(None) => {
             if encrypted_db.exists() {
                 return Err(AppInitError::DatabaseKeyMismatch(
                     "local encryption key not found but encrypted databases exist".into(),
                 ));
             }
+            keychain
+                .create_local_encryption_key()
+                .map_err(|e| AppInitError::KeyDerivation(e.to_string()))?
+        }
+        Err(e) => {
+            // partial keychain state: one entry exists but the other is missing
+            if encrypted_db.exists() {
+                return Err(AppInitError::DatabaseKeyMismatch(format!(
+                    "partial encryption key in keychain with existing DB: {e}"
+                )));
+            }
+            // no DB exists, safe to purge partial entries and create fresh
+            warn!("Purging partial local encryption key entries: {e}");
+            keychain.purge_local_encryption_key();
             keychain
                 .create_local_encryption_key()
                 .map_err(|e| AppInitError::KeyDerivation(e.to_string()))?

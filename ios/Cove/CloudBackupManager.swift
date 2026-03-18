@@ -15,6 +15,7 @@ final class CloudBackupManager: CloudBackupManagerReconciler, @unchecked Sendabl
     private init() {
         self.rust = RustCloudBackupManager()
         self.rust.listenForUpdates(reconciler: self)
+        self.state = self.rust.currentState()
     }
 
     func reconcile(message: CloudBackupReconcileMessage) {

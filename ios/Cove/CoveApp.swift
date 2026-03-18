@@ -42,6 +42,7 @@ struct CoveApp: App {
         case loading
         case ready(AppManager, AuthManager)
         case catastrophicError
+        case restoring
         case fatalError(String)
     }
 
@@ -77,9 +78,21 @@ struct CoveApp: App {
                 case let .ready(app, auth):
                     CoveMainView(app: app, auth: auth)
                 case .catastrophicError:
-                    CatastrophicErrorView {
-                        rebootstrap()
-                    }
+                    CatastrophicErrorView(
+                        onRestoreFromCloud: {
+                            startupState = .restoring
+                        },
+                        onWipeOnly: {
+                            rebootstrap()
+                        }
+                    )
+                case .restoring:
+                    DeviceRestoreView(
+                        onComplete: {
+                            completeBootstrap()
+                        },
+                        onError: { _ in }
+                    )
                 case let .fatalError(message):
                     CoverView(errorMessage: message)
                 }
@@ -196,6 +209,8 @@ extension CoveApp {
     }
 
     private func completeBootstrap(warning: String? = nil) {
+        CloudBackupManager.shared.rust.syncPersistedState()
+
         let appManager = AppManager.shared
         appManager.asyncRuntimeReady = true
 

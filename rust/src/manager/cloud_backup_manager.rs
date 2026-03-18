@@ -111,11 +111,40 @@ impl RustCloudBackupManager {
         self.state.read().clone()
     }
 
+    /// Read persisted cloud backup state from DB and update in-memory state
+    ///
+    /// Called after bootstrap completes so the UI reflects the correct state
+    /// even before the reconciler has delivered its first message
+    pub fn sync_persisted_state(&self) {
+        let db_state = Database::global().global_config.cloud_backup();
+        let mut state = self.state.write();
+        if matches!(*state, CloudBackupState::Disabled) {
+            let new_state = match db_state {
+                CloudBackup::Enabled { .. } => CloudBackupState::Enabled,
+                CloudBackup::Disabled => CloudBackupState::Disabled,
+            };
+
+            if *state != new_state {
+                *state = new_state.clone();
+                drop(state);
+                self.send(Message::StateChanged(new_state));
+            }
+        }
+    }
+
     /// Enable cloud backup — idempotent, safe to retry
     ///
     /// Creates passkey (or reuses existing), encrypts master key + all wallets,
     /// uploads to CloudKit, marks enabled only after manifest upload succeeds
     pub fn enable_cloud_backup(&self) {
+        {
+            let state = self.state.read();
+            if matches!(*state, CloudBackupState::Enabling | CloudBackupState::Restoring) {
+                warn!("enable_cloud_backup called while already {state:?}, ignoring");
+                return;
+            }
+        }
+
         let this = CLOUD_BACKUP_MANAGER.clone();
         std::thread::spawn(move || {
             if let Err(e) = this.do_enable_cloud_backup() {
@@ -129,6 +158,14 @@ impl RustCloudBackupManager {
     ///
     /// Uses discoverable credential assertion (no local keychain state required)
     pub fn restore_from_cloud_backup(&self) {
+        {
+            let state = self.state.read();
+            if matches!(*state, CloudBackupState::Enabling | CloudBackupState::Restoring) {
+                warn!("restore_from_cloud_backup called while already {state:?}, ignoring");
+                return;
+            }
+        }
+
         let this = CLOUD_BACKUP_MANAGER.clone();
         std::thread::spawn(move || {
             if let Err(e) = this.do_restore_from_cloud_backup() {
@@ -350,8 +387,7 @@ impl RustCloudBackupManager {
         };
 
         let mut existing_fingerprints = crate::backup::import::collect_existing_fingerprints()
-            .inspect_err(|e| warn!("Failed to collect fingerprints: {e}"))
-            .unwrap_or_default();
+            .map_err(|e| CloudBackupError::Internal(format!("collect fingerprints: {e}")))?;
 
         // download and restore each wallet
         for (i, record_id) in manifest.wallet_record_ids.iter().enumerate() {
@@ -366,6 +402,12 @@ impl RustCloudBackupManager {
             }
 
             self.send(Message::ProgressUpdated { completed: (i + 1) as u32, total });
+        }
+
+        // don't mark enabled if every wallet failed
+        if report.wallets_restored == 0 && report.wallets_failed > 0 {
+            self.send(Message::RestoreComplete(report));
+            return Err(CloudBackupError::Internal("all wallets failed to restore".into()));
         }
 
         // mark enabled
@@ -416,7 +458,9 @@ fn restore_single_wallet(
             .map_err(|e| CloudBackupError::Internal(format!("parse wallet metadata: {e}")))?;
 
     // duplicate detection
-    if crate::backup::import::is_wallet_duplicate(&metadata, existing_fingerprints).unwrap_or(false)
+    if crate::backup::import::is_wallet_duplicate(&metadata, existing_fingerprints)
+        .inspect_err(|e| warn!("is_wallet_duplicate check failed for {}: {e}", metadata.name))
+        .unwrap_or(false)
     {
         info!("Skipping duplicate wallet {}", metadata.name);
         return Ok(());
@@ -572,6 +616,16 @@ pub fn wipe_local_data() {
     log_remove_file(&root.join("cove.encrypted.db"));
     // legacy plaintext (if leftover)
     log_remove_file(&root.join("cove.db"));
+
+    // BDK store files in the root data dir
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with("bdk_wallet") {
+                log_remove_file(&entry.path());
+            }
+        }
+    }
 
     // per-wallet databases
     let wallet_dir = &*cove_common::consts::WALLET_DATA_DIR;
