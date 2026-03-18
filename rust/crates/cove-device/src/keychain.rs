@@ -2,6 +2,8 @@
 
 use std::{str::FromStr as _, sync::Arc};
 
+use cove_util::ResultExt as _;
+
 use bdk_wallet::bitcoin::bip32::Xpub;
 use bdk_wallet::descriptor::ExtendedDescriptor;
 use bip39::Mnemonic;
@@ -383,7 +385,7 @@ impl Keychain {
         };
 
         let cryptor = Cryptor::try_from_string(&encryption_secret_key)
-            .map_err(|e| KeychainError::Decrypt(format!("tap signer encryption key: {e}")))?;
+            .map_err_prefix("tap signer encryption key", KeychainError::Decrypt)?;
 
         let backup_key = wallet_tap_signer_backup_key_name(id);
         let Some(encrypted_backup) = self.0.get(backup_key) else {
@@ -394,10 +396,10 @@ impl Keychain {
 
         let backup_hex = cryptor
             .decrypt_from_string(&encrypted_backup)
-            .map_err(|e| KeychainError::Decrypt(format!("tap signer backup: {e}")))?;
+            .map_err_prefix("tap signer backup", KeychainError::Decrypt)?;
 
         let backup = hex::decode(backup_hex)
-            .map_err(|e| KeychainError::ParseSavedValue(format!("tap signer backup hex: {e}")))?;
+            .map_err_prefix("tap signer backup hex", KeychainError::ParseSavedValue)?;
 
         Ok(Some(backup))
     }

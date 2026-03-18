@@ -57,6 +57,24 @@ pub struct CloudBackupRestoreReport {
     pub failed_wallet_errors: Vec<String>,
 }
 
+#[derive(Debug, thiserror::Error)]
+enum CloudBackupError {
+    #[error("not supported: {0}")]
+    NotSupported(String),
+
+    #[error("passkey error: {0}")]
+    Passkey(String),
+
+    #[error("crypto error: {0}")]
+    Crypto(String),
+
+    #[error("cloud storage error: {0}")]
+    Cloud(String),
+
+    #[error("internal error: {0}")]
+    Internal(String),
+}
+
 #[uniffi::export(callback_interface)]
 pub trait CloudBackupManagerReconciler: Send + Sync + std::fmt::Debug + 'static {
     fn reconcile(&self, message: CloudBackupReconcileMessage);
@@ -121,6 +139,7 @@ impl RustCloudBackupManager {
     pub fn sync_persisted_state(&self) {
         let db_state = Database::global().global_config.cloud_backup();
         let mut state = self.state.write();
+
         if matches!(*state, CloudBackupState::Disabled) {
             let new_state = match db_state {
                 CloudBackup::Enabled { .. } => CloudBackupState::Enabled,
@@ -194,10 +213,9 @@ impl RustCloudBackupManager {
         let cspp = cove_cspp::Cspp::new(Keychain::global().clone());
         let master_key = cspp
             .get_or_create_master_key()
-            .map_err(|e| CloudBackupError::Internal(format!("master key: {e}")))?;
+            .map_err_prefix("master key", CloudBackupError::Internal)?;
 
         let keychain = Keychain::global();
-
         let (prf_key, prf_salt) = obtain_prf_key(keychain, passkey)?;
 
         // encrypt and upload master key
@@ -209,7 +227,6 @@ impl RustCloudBackupManager {
             serde_json::to_vec(&encrypted_master).map_err_str(CloudBackupError::Internal)?;
 
         let cloud = CloudStorage::global();
-
         cloud.upload_master_key_backup(master_json).map_err_str(CloudBackupError::Cloud)?;
 
         // enumerate and encrypt all wallets
@@ -256,7 +273,7 @@ impl RustCloudBackupManager {
         let now = jiff::Timestamp::now().as_second().try_into().unwrap_or(0);
         db.global_config
             .set_cloud_backup(&CloudBackup::Enabled { last_sync: Some(now) })
-            .map_err(|e| CloudBackupError::Internal(format!("persist cloud backup state: {e}")))?;
+            .map_err_prefix("persist cloud backup state", CloudBackupError::Internal)?;
 
         self.send(Message::EnableComplete);
         self.send(Message::StateChanged(CloudBackupState::Enabled));
@@ -274,13 +291,14 @@ impl RustCloudBackupManager {
         // download encrypted master key to get prf_salt
         let master_json =
             cloud.download_master_key_backup().map_err_str(CloudBackupError::Cloud)?;
+
         let encrypted_master: cove_cspp::backup_data::EncryptedMasterKeyBackup =
             serde_json::from_slice(&master_json).map_err_str(CloudBackupError::Internal)?;
 
         if encrypted_master.version != 1 {
+            let version = encrypted_master.version;
             return Err(CloudBackupError::Internal(format!(
-                "unsupported master key backup version: {}",
-                encrypted_master.version
+                "unsupported master key backup version: {version}",
             )));
         }
 
@@ -299,24 +317,25 @@ impl RustCloudBackupManager {
 
         // decrypt master key
         let master_key = master_key_crypto::decrypt_master_key(&encrypted_master, &prf_key)
-            .map_err(|e| CloudBackupError::Crypto(format!("master key decrypt: {e}")))?;
+            .map_err_prefix("master key decrypt", CloudBackupError::Crypto)?;
 
         // persist discovered credential to local keychain
         let keychain = Keychain::global();
         keychain
             .save(CREDENTIAL_ID_KEY.to_string(), hex::encode(&discovered.credential_id))
-            .map_err(|e| CloudBackupError::Internal(format!("save credential_id: {e}")))?;
+            .map_err_prefix("save credential_id", CloudBackupError::Internal)?;
+
         keychain
             .save(PRF_SALT_KEY.to_string(), hex::encode(prf_salt))
-            .map_err(|e| CloudBackupError::Internal(format!("save prf_salt: {e}")))?;
+            .map_err_prefix("save prf_salt", CloudBackupError::Internal)?;
 
         // save master key to keychain for cloud backup decryption
         let cspp = cove_cspp::Cspp::new(keychain.clone());
         cspp.save_master_key(&master_key)
-            .map_err(|e| CloudBackupError::Internal(format!("save master key: {e}")))?;
-        cove_cspp::reset_master_key_cache();
+            .map_err_prefix("save master key", CloudBackupError::Internal)?;
 
         // local encryption key unchanged, DB already open — just import cloud wallets
+        cove_cspp::reset_master_key_cache();
 
         // download manifest
         let manifest_json = cloud.download_manifest().map_err_str(CloudBackupError::Cloud)?;
@@ -324,9 +343,9 @@ impl RustCloudBackupManager {
             serde_json::from_slice(&manifest_json).map_err_str(CloudBackupError::Internal)?;
 
         if manifest.version != 1 {
+            let version = manifest.version;
             return Err(CloudBackupError::Internal(format!(
-                "unsupported manifest version: {}",
-                manifest.version
+                "unsupported manifest version: {version}",
             )));
         }
 
@@ -339,7 +358,7 @@ impl RustCloudBackupManager {
         };
 
         let mut existing_fingerprints = crate::backup::import::collect_existing_fingerprints()
-            .map_err(|e| CloudBackupError::Internal(format!("collect fingerprints: {e}")))?;
+            .map_err_prefix("collect fingerprints", CloudBackupError::Internal)?;
 
         // download and restore each wallet
         for (i, record_id) in manifest.wallet_record_ids.iter().enumerate() {
@@ -367,10 +386,11 @@ impl RustCloudBackupManager {
         let db = Database::global();
         db.global_config
             .set_cloud_backup(&CloudBackup::Enabled { last_sync: Some(now) })
-            .map_err(|e| CloudBackupError::Internal(format!("persist cloud backup state: {e}")))?;
+            .map_err_prefix("persist cloud backup state", CloudBackupError::Internal)?;
 
         self.send(Message::RestoreComplete(report));
         self.send(Message::StateChanged(CloudBackupState::Enabled));
+
         info!("Cloud backup restore complete");
         Ok(())
     }
@@ -392,22 +412,22 @@ fn restore_single_wallet(
 
     let encrypted: cove_cspp::backup_data::EncryptedWalletBackup =
         serde_json::from_slice(&wallet_json)
-            .map_err(|e| CloudBackupError::Internal(format!("deserialize wallet: {e}")))?;
+            .map_err_prefix("deserialize wallet", CloudBackupError::Internal)?;
 
     if encrypted.version != 1 {
+        let version = encrypted.version;
         return Err(CloudBackupError::Internal(format!(
-            "unsupported wallet backup version: {}",
-            encrypted.version
+            "unsupported wallet backup version: {version}",
         )));
     }
 
     let entry = wallet_crypto::decrypt_wallet_backup(&encrypted, critical_key)
-        .map_err(|e| CloudBackupError::Crypto(format!("decrypt wallet: {e}")))?;
+        .map_err_prefix("decrypt wallet", CloudBackupError::Crypto)?;
 
     // convert WalletEntry to WalletMetadata + restore
     let metadata: crate::wallet::metadata::WalletMetadata =
         serde_json::from_value(entry.metadata.clone())
-            .map_err(|e| CloudBackupError::Internal(format!("parse wallet metadata: {e}")))?;
+            .map_err_prefix("parse wallet metadata", CloudBackupError::Internal)?;
 
     // duplicate detection
     if crate::backup::import::is_wallet_duplicate(&metadata, existing_fingerprints)
@@ -433,7 +453,7 @@ fn restore_single_wallet(
     match &backup_model.secret {
         crate::backup::model::WalletSecret::Mnemonic(words) => {
             let mnemonic = bip39::Mnemonic::from_str(words)
-                .map_err(|e| CloudBackupError::Internal(format!("invalid mnemonic: {e}")))?;
+                .map_err_prefix("invalid mnemonic", CloudBackupError::Internal)?;
 
             crate::backup::import::restore_mnemonic_wallet(&metadata, mnemonic).map_err(
                 |(e, _)| CloudBackupError::Internal(format!("restore mnemonic wallet: {e}")),
@@ -494,10 +514,11 @@ fn obtain_prf_key(
     // persist only after successful PRF auth
     keychain
         .save(CREDENTIAL_ID_KEY.to_string(), hex::encode(&credential_id))
-        .map_err(|e| CloudBackupError::Internal(format!("save credential: {e}")))?;
+        .map_err_prefix("save credential", CloudBackupError::Internal)?;
+
     keychain
         .save(PRF_SALT_KEY.to_string(), hex::encode(prf_salt))
-        .map_err(|e| CloudBackupError::Internal(format!("save prf_salt: {e}")))?;
+        .map_err_prefix("save prf_salt", CloudBackupError::Internal)?;
 
     Ok((prf_key, prf_salt))
 }
@@ -585,7 +606,7 @@ fn build_wallet_entry(
     };
 
     let metadata_value = serde_json::to_value(metadata)
-        .map_err(|e| CloudBackupError::Internal(format!("serialize metadata: {e}")))?;
+        .map_err_prefix("serialize metadata", CloudBackupError::Internal)?;
 
     let wallet_mode = match mode {
         crate::wallet::metadata::WalletMode::Main => WalletMode::Main,
@@ -634,24 +655,6 @@ pub fn wipe_local_data() {
     {
         error!("Failed to remove wallet data dir: {e}");
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-enum CloudBackupError {
-    #[error("not supported: {0}")]
-    NotSupported(String),
-
-    #[error("passkey error: {0}")]
-    Passkey(String),
-
-    #[error("crypto error: {0}")]
-    Crypto(String),
-
-    #[error("cloud storage error: {0}")]
-    Cloud(String),
-
-    #[error("internal error: {0}")]
-    Internal(String),
 }
 
 #[cfg(test)]

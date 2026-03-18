@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use cove_util::ResultExt as _;
 use zeroize::Zeroizing;
 
 use cove_types::WalletId;
@@ -30,7 +31,7 @@ pub async fn verify_backup(
     let mut wallets = Vec::with_capacity(payload.wallets.len());
     for wallet_backup in &payload.wallets {
         let metadata: WalletMetadata = serde_json::from_value(wallet_backup.metadata.clone())
-            .map_err(|e| BackupError::Deserialization(format!("wallet metadata: {e}")))?;
+            .map_err_prefix("wallet metadata", BackupError::Deserialization)?;
 
         let mut already_on_device = import::is_wallet_duplicate(&metadata, &existing_fingerprints)?;
 

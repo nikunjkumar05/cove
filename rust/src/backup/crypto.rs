@@ -42,12 +42,12 @@ pub fn clean_password(raw: &str) -> Result<Zeroizing<String>, BackupError> {
 /// the argon2 crate changes its defaults in a future version
 fn derive_key(password: &str, salt: &[u8; SALT_SIZE]) -> Result<Zeroizing<[u8; 32]>, BackupError> {
     let params = Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, Some(32))
-        .map_err(|e| BackupError::Encryption(format!("invalid argon2 params: {e}")))?;
+        .map_err_prefix("invalid argon2 params", BackupError::Encryption)?;
 
     let mut key = Zeroizing::new([0u8; 32]);
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
         .hash_password_into(password.as_bytes(), salt, key.as_mut())
-        .map_err(|e| BackupError::Encryption(format!("key derivation failed: {e}")))?;
+        .map_err_prefix("key derivation failed", BackupError::Encryption)?;
 
     Ok(key)
 }

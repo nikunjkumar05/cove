@@ -2,6 +2,7 @@ use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
+use cove_util::ResultExt as _;
 use derive_more::{Display, FromStr};
 use serde::{Deserialize, Serialize};
 
@@ -72,7 +73,7 @@ impl AuthPin {
 
         let pin_hash = argon2
             .hash_password(pin.as_bytes(), &salt)
-            .map_err(|error| AuthError::HashError(format!("unable to hash pin: {error}")))?
+            .map_err_prefix("unable to hash pin", AuthError::HashError)?
             .to_string();
 
         Ok(pin_hash)
