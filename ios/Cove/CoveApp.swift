@@ -49,6 +49,7 @@ struct CoveApp: App {
 
     @State private var startupState: StartupState = .loading
     @State private var bdkMigrationWarning: String?
+    @State private var cloudCheckError: String?
 
     init() {
         _ = Keychain(keychain: KeychainAccessor())
@@ -126,6 +127,19 @@ struct CoveApp: App {
             } message: {
                 Text(
                     "Some wallet databases couldn't be encrypted. Your wallets still work and encryption will retry on next launch.\n\nIf this persists, please contact feedback@covebitcoinwallet.com"
+                )
+            }
+            .alert(
+                "Cloud Backup Check Failed",
+                isPresented: Binding(
+                    get: { cloudCheckError != nil },
+                    set: { if !$0 { cloudCheckError = nil } }
+                )
+            ) {
+                Button("OK") { cloudCheckError = nil }
+            } message: {
+                Text(
+                    "Could not check iCloud for existing backups. If you previously had wallets backed up, please check your network connection and restart the app"
                 )
             }
         }
@@ -229,12 +243,20 @@ extension CoveApp {
         {
             Task.detached {
                 let cloud = CloudStorageAccessImpl()
-                let hasBackup = (try? cloud.hasCloudBackup()) ?? false
-                await MainActor.run {
-                    if hasBackup {
-                        self.startupState = .offerCloudRestore
-                    } else {
+                do {
+                    let hasBackup = try cloud.hasCloudBackup()
+                    await MainActor.run {
+                        if hasBackup {
+                            self.startupState = .offerCloudRestore
+                        } else {
+                            self.finishBootstrap(warning: warning)
+                        }
+                    }
+                } catch {
+                    Log.warn("[STARTUP] cloud backup check failed: \(error)")
+                    await MainActor.run {
                         self.finishBootstrap(warning: warning)
+                        self.cloudCheckError = error.localizedDescription
                     }
                 }
             }

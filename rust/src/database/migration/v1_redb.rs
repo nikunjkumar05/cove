@@ -291,11 +291,33 @@ fn recover_legacy_at_path(db_path: &Path) -> Result<()> {
     let bak_path = db_path.with_extension(format!("{extension}.bak"));
     let tmp_path = db_path.with_extension(format!("{extension}.enc.tmp"));
 
+    // only .bak exists: old migration completed but final rename didn't happen
     if bak_path.exists() && !db_path.exists() && !tmp_path.exists() {
         let bak = bak_path.display();
         warn!("Only legacy backup exists at {bak} -- restoring from backup");
         std::fs::rename(&bak_path, db_path)
             .context(format!("failed to restore from legacy backup at {bak}"))?;
+        return Ok(());
+    }
+
+    // both .enc.tmp and .bak exist but db missing: crashed during old two-phase swap
+    // after old→.bak rename but before tmp→final rename
+    if tmp_path.exists() && bak_path.exists() && !db_path.exists() {
+        let path = db_path.display();
+        info!("Recovering interrupted legacy migration at {path}");
+        match verify_encrypted_redb_db(&tmp_path) {
+            Ok(true) => {
+                std::fs::rename(&tmp_path, db_path)
+                    .context(format!("failed to finish interrupted legacy migration at {path}"))?;
+                log_remove_file(&bak_path);
+            }
+            _ => {
+                warn!("Legacy .enc.tmp at {path} is corrupt, restoring from backup");
+                log_remove_file(&tmp_path);
+                std::fs::rename(&bak_path, db_path)
+                    .context(format!("failed to restore from legacy backup at {path}"))?;
+            }
+        }
         return Ok(());
     }
 
@@ -313,12 +335,23 @@ fn recover_legacy_at_path(db_path: &Path) -> Result<()> {
 pub fn main_database_needs_migration() -> bool {
     let source = ROOT_DATA_DIR.join(LEGACY_MAIN_DB);
     let dest = ROOT_DATA_DIR.join(ENCRYPTED_MAIN_DB);
-    source.exists() && !dest.exists()
+    source.exists() && !dest.exists() && !EncryptedBackend::is_encrypted(&source)
 }
 
-/// Check whether a wallet subdirectory needs migration
+/// Check whether a wallet subdirectory needs plaintext-to-encrypted migration
 fn needs_redb_migration(wallet_dir: &Path) -> bool {
-    wallet_dir.join(LEGACY_WALLET_DB).exists() && !wallet_dir.join(ENCRYPTED_WALLET_DB).exists()
+    let source = wallet_dir.join(LEGACY_WALLET_DB);
+    source.exists()
+        && !wallet_dir.join(ENCRYPTED_WALLET_DB).exists()
+        && !EncryptedBackend::is_encrypted(&source)
+}
+
+/// Check whether a wallet subdirectory has an already-encrypted legacy DB that just needs renaming
+fn needs_legacy_rename(wallet_dir: &Path) -> bool {
+    let source = wallet_dir.join(LEGACY_WALLET_DB);
+    source.exists()
+        && !wallet_dir.join(ENCRYPTED_WALLET_DB).exists()
+        && EncryptedBackend::is_encrypted(&source)
 }
 
 /// Count wallet subdirectories that have an unencrypted wallet_data.json
@@ -344,7 +377,8 @@ pub fn count_redb_wallets_needing_migration() -> u32 {
                 continue;
             }
         };
-        if needs_redb_migration(&entry.path()) {
+        let dir = entry.path();
+        if needs_redb_migration(&dir) || needs_legacy_rename(&dir) {
             count += 1;
         }
     }
@@ -360,6 +394,13 @@ pub fn migrate_main_database_if_needed() -> Result<bool> {
 
     if !source.exists() || dest.exists() {
         return Ok(false);
+    }
+
+    // already encrypted by old migration code, just relocate to new path
+    if EncryptedBackend::is_encrypted(&source) {
+        info!("Legacy DB at cove.db is already encrypted, renaming to cove.encrypted.db");
+        std::fs::rename(&source, &dest).context("failed to rename already-encrypted legacy DB")?;
+        return Ok(true);
     }
 
     info!("Migrating main database to encrypted format");
@@ -452,8 +493,9 @@ impl WalletMigration {
             }
 
             let entry = entry.context("failed to read directory entry during wallet migration")?;
-            if needs_redb_migration(&entry.path()) {
-                let source_db = entry.path().join(LEGACY_WALLET_DB);
+            let wallet_dir = entry.path();
+            if needs_redb_migration(&wallet_dir) {
+                let source_db = wallet_dir.join(LEGACY_WALLET_DB);
                 let db_display = source_db.display();
                 info!("Migrating wallet database at {db_display}");
                 match migrate_wallet_database(&source_db) {
@@ -465,6 +507,17 @@ impl WalletMigration {
                         self.migration.tick();
                     }
                 }
+            } else if needs_legacy_rename(&wallet_dir) {
+                // already encrypted by old migration code, just rename to new path
+                let source_db = wallet_dir.join(LEGACY_WALLET_DB);
+                let dest_db = wallet_dir.join(ENCRYPTED_WALLET_DB);
+                let db_display = source_db.display();
+                info!("Legacy wallet DB at {db_display} already encrypted, renaming");
+                if let Err(e) = std::fs::rename(&source_db, &dest_db) {
+                    error!("Failed to rename already-encrypted wallet DB {db_display}: {e:#}");
+                    errors.push(format!("{db_display}: {e:#}"));
+                }
+                self.migration.tick();
             }
         }
 
