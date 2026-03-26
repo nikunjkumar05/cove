@@ -8,6 +8,7 @@ extension WeakReconciler: CloudBackupManagerReconciler where Reconciler == Cloud
 @Observable
 final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @unchecked Sendable {
     static let shared = CloudBackupManager()
+    private static let passkeySheetDismissDelay: TimeInterval = 0.8
 
     typealias Message = CloudBackupReconcileMessage
 
@@ -45,12 +46,14 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
             hasPendingUploadVerification = pending
         case .existingBackupFound:
             // delay to let the system passkey sheet finish dismissing
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.passkeySheetDismissDelay) {
+                [weak self] in
                 self?.showExistingBackupWarning = true
             }
         case .passkeyDiscoveryCancelled:
             // delay to let the system passkey sheet finish dismissing
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.passkeySheetDismissDelay) {
+                [weak self] in
                 self?.showPasskeyChoiceDialog = true
             }
         }

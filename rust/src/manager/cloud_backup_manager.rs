@@ -205,6 +205,35 @@ impl RustCloudBackupManager {
             .get(CSPP_NAMESPACE_ID_KEY.into())
             .ok_or_else(|| CloudBackupError::Internal("namespace_id not found in keychain".into()))
     }
+
+    fn start_background_operation<F>(
+        self: Arc<Self>,
+        operation_name: &str,
+        entering_state: Option<CloudBackupState>,
+        work: F,
+    ) where
+        F: FnOnce(Arc<Self>) -> Result<(), CloudBackupError> + Send + 'static,
+    {
+        {
+            let state = self.state.read();
+            if matches!(*state, CloudBackupState::Enabling | CloudBackupState::Restoring) {
+                warn!("{operation_name} called while {state:?}, ignoring");
+                return;
+            }
+        }
+
+        let operation_name = operation_name.to_owned();
+        cove_tokio::task::spawn_blocking(move || {
+            if let Some(state) = entering_state {
+                self.send(Message::StateChanged(state));
+            }
+
+            if let Err(error) = work(self.clone()) {
+                error!("{operation_name} failed: {error}");
+                self.send(Message::StateChanged(CloudBackupState::Error(error.to_string())));
+            }
+        });
+    }
 }
 
 #[uniffi::export]
@@ -331,21 +360,11 @@ impl RustCloudBackupManager {
     /// Creates passkey, encrypts master key + all wallets, hands them off to iCloud,
     /// then verifies full upload in the background
     pub fn enable_cloud_backup(&self) {
-        {
-            let state = self.state.read();
-            if matches!(*state, CloudBackupState::Enabling | CloudBackupState::Restoring) {
-                warn!("enable_cloud_backup called while already {state:?}, ignoring");
-                return;
-            }
-        }
-
-        let this = CLOUD_BACKUP_MANAGER.clone();
-        cove_tokio::task::spawn_blocking(move || {
-            if let Err(error) = this.do_enable_cloud_backup() {
-                error!("Cloud backup enable failed: {error}");
-                this.send(Message::StateChanged(CloudBackupState::Error(error.to_string())));
-            }
-        });
+        CLOUD_BACKUP_MANAGER.clone().start_background_operation(
+            "enable_cloud_backup",
+            None,
+            |this| this.do_enable_cloud_backup(),
+        );
     }
 
     /// Enable cloud backup, skipping recovery — creates a new namespace
@@ -353,22 +372,11 @@ impl RustCloudBackupManager {
     /// Called after the user confirms they want a new backup when existing cloud
     /// backups were found but not recovered (UserDeclined or NoMatch)
     pub fn enable_cloud_backup_force_new(&self) {
-        {
-            let state = self.state.read();
-            if matches!(*state, CloudBackupState::Enabling | CloudBackupState::Restoring) {
-                warn!("enable_cloud_backup_force_new called while {state:?}, ignoring");
-                return;
-            }
-        }
-
-        let this = CLOUD_BACKUP_MANAGER.clone();
-        cove_tokio::task::spawn_blocking(move || {
-            this.send(Message::StateChanged(CloudBackupState::Enabling));
-            if let Err(error) = this.do_enable_cloud_backup_create_new() {
-                error!("Cloud backup force-new enable failed: {error}");
-                this.send(Message::StateChanged(CloudBackupState::Error(error.to_string())));
-            }
-        });
+        CLOUD_BACKUP_MANAGER.clone().start_background_operation(
+            "enable_cloud_backup_force_new",
+            Some(CloudBackupState::Enabling),
+            |this| this.do_enable_cloud_backup_create_new(),
+        );
     }
 
     /// Enable cloud backup, skipping passkey discovery — goes straight to registration
@@ -376,45 +384,26 @@ impl RustCloudBackupManager {
     /// Called after the user cancels the passkey discovery picker and chooses
     /// "Create New Passkey" from the options alert
     pub fn enable_cloud_backup_no_discovery(&self) {
-        {
-            let state = self.state.read();
-            if matches!(*state, CloudBackupState::Enabling | CloudBackupState::Restoring) {
-                warn!("enable_cloud_backup_no_discovery called while {state:?}, ignoring");
-                return;
-            }
-        }
-
-        let this = CLOUD_BACKUP_MANAGER.clone();
-        cove_tokio::task::spawn_blocking(move || {
-            this.send(Message::StateChanged(CloudBackupState::Enabling));
-            if let Err(error) = this.do_enable_cloud_backup_no_discovery() {
-                error!("Cloud backup enable (no discovery) failed: {error}");
-                this.send(Message::StateChanged(CloudBackupState::Error(error.to_string())));
-            }
-        });
+        CLOUD_BACKUP_MANAGER.clone().start_background_operation(
+            "enable_cloud_backup_no_discovery",
+            Some(CloudBackupState::Enabling),
+            |this| this.do_enable_cloud_backup_no_discovery(),
+        );
     }
 
     /// Restore from cloud backup — called after device restore
     ///
     /// Uses discoverable credential assertion (no local keychain state required)
     pub fn restore_from_cloud_backup(&self) {
-        {
-            let state = self.state.read();
-            if matches!(*state, CloudBackupState::Enabling | CloudBackupState::Restoring) {
-                warn!("restore_from_cloud_backup called while already {state:?}, ignoring");
-                return;
-            }
-        }
-
         info!("restore_from_cloud_backup: spawning restore task");
-        let this = CLOUD_BACKUP_MANAGER.clone();
-        cove_tokio::task::spawn_blocking(move || {
-            info!("restore_from_cloud_backup: task started");
-            if let Err(error) = this.do_restore_from_cloud_backup() {
-                error!("Cloud backup restore failed: {error}");
-                this.send(Message::StateChanged(CloudBackupState::Error(error.to_string())));
-            }
-        });
+        CLOUD_BACKUP_MANAGER.clone().start_background_operation(
+            "restore_from_cloud_backup",
+            None,
+            |this| {
+                info!("restore_from_cloud_backup: task started");
+                this.do_restore_from_cloud_backup()
+            },
+        );
     }
 
     /// Back up a newly created wallet, fire-and-forget

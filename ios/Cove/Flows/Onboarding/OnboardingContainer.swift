@@ -90,6 +90,8 @@ struct OnboardingContainer: View {
 // MARK: - Cloud Check View
 
 private struct CloudCheckView: View {
+    private static let retryDelays: [Duration] = [.seconds(2), .seconds(3)]
+
     let manager: OnboardingManager
 
     var body: some View {
@@ -106,13 +108,13 @@ private struct CloudCheckView: View {
         }
         .task {
             let hasBackup = await Task.detached(priority: .userInitiated) {
-                Self.checkForCloudBackup()
+                await Self.checkForCloudBackup()
             }.value
             manager.dispatch(.cloudCheckComplete(hasBackup: hasBackup))
         }
     }
 
-    private static func checkForCloudBackup() -> Bool {
+    private static func checkForCloudBackup() async -> Bool {
         guard FileManager.default.ubiquityIdentityToken != nil else {
             Log.info("[ONBOARDING] iCloud not available")
             return false
@@ -124,7 +126,8 @@ private struct CloudCheckView: View {
             let hasBackup = (try? cloud.hasAnyCloudBackup()) == true
             Log.info("[ONBOARDING] hasAnyCloudBackup returned: \(hasBackup) attempt=\(attempt)")
             if hasBackup { return true }
-            Thread.sleep(forTimeInterval: attempt == 1 ? 2 : 3)
+            guard attempt < 3 else { break }
+            try? await Task.sleep(for: retryDelays[attempt - 1])
         }
 
         return false
