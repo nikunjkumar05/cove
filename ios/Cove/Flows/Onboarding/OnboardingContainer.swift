@@ -90,43 +90,115 @@ struct OnboardingContainer: View {
 // MARK: - Cloud Check View
 
 private struct CloudCheckView: View {
-    private static let retryDelays: [Duration] = [.seconds(2), .seconds(3)]
+    private static let retryDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(2), .seconds(3), .seconds(5), .seconds(10)]
+    private static var maxAttempts: Int {
+        retryDelays.count + 1
+    }
 
     let manager: OnboardingManager
+    @State private var progress: Double = 0
 
     var body: some View {
         VStack(spacing: 24) {
             Spacer()
 
-            ProgressView()
-                .controlSize(.large)
+            // decorative icon
+            ZStack {
+                Circle()
+                    .fill(Color.duskBlue.opacity(0.4))
+                    .frame(width: 100, height: 100)
+                    .shadow(color: Color(red: 0.165, green: 0.353, blue: 0.545).opacity(0.5), radius: 30)
 
-            Text("Checking for cloud backup...")
-                .foregroundStyle(.secondary)
+                Circle()
+                    .stroke(
+                        LinearGradient(
+                            colors: [.btnGradientLight, .btnGradientDark],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 2
+                    )
+                    .frame(width: 100, height: 100)
+
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 36, weight: .medium))
+                    .foregroundStyle(.white)
+            }
+
+            VStack(spacing: 12) {
+                Text("Checking for cloud backup...")
+                    .font(.title3)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.white)
+
+                ProgressView()
+                    .controlSize(.regular)
+                    .tint(.white)
+
+                ProgressView(value: progress)
+                    .tint(.white)
+                    .frame(width: 200)
+                    .opacity(progress > 0 ? 1 : 0)
+            }
 
             Spacer()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            ZStack {
+                Color.midnightBlue
+
+                RadialGradient(
+                    stops: [
+                        .init(color: Color(red: 0.165, green: 0.353, blue: 0.545).opacity(0.9), location: 0),
+                        .init(color: Color(red: 0.118, green: 0.227, blue: 0.361).opacity(0.4), location: 0.45),
+                        .init(color: .clear, location: 0.85),
+                    ],
+                    center: .init(x: 0.35, y: 0.18),
+                    startRadius: 0,
+                    endRadius: 400
+                )
+
+                RadialGradient(
+                    stops: [
+                        .init(color: Color(red: 0.118, green: 0.290, blue: 0.420).opacity(0.8), location: 0),
+                        .init(color: .clear, location: 0.75),
+                    ],
+                    center: .init(x: 0.75, y: 0.12),
+                    startRadius: 0,
+                    endRadius: 300
+                )
+            }
+            .ignoresSafeArea()
+        }
         .task {
             let hasBackup = await Task.detached(priority: .userInitiated) {
-                await Self.checkForCloudBackup()
+                await Self.checkForCloudBackup { attempt in
+                    await MainActor.run {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            progress = Double(attempt) / Double(maxAttempts)
+                        }
+                    }
+                }
             }.value
             manager.dispatch(.cloudCheckComplete(hasBackup: hasBackup))
         }
     }
 
-    private static func checkForCloudBackup() async -> Bool {
+    private static func checkForCloudBackup(onAttempt: @Sendable (Int) async -> Void) async -> Bool {
         guard FileManager.default.ubiquityIdentityToken != nil else {
             Log.info("[ONBOARDING] iCloud not available")
             return false
         }
 
         let cloud = CloudStorage(cloudStorage: CloudStorageAccessImpl())
-        for attempt in 1 ... 3 {
-            Log.info("[ONBOARDING] calling hasAnyCloudBackup attempt=\(attempt)")
+        for attempt in 1 ... maxAttempts {
+            await onAttempt(attempt)
+            Log.info("[ONBOARDING] calling hasAnyCloudBackup attempt=\(attempt)/\(maxAttempts)")
             let hasBackup = (try? cloud.hasAnyCloudBackup()) == true
-            Log.info("[ONBOARDING] hasAnyCloudBackup returned: \(hasBackup) attempt=\(attempt)")
+            Log.info("[ONBOARDING] hasAnyCloudBackup returned: \(hasBackup) attempt=\(attempt)/\(maxAttempts)")
             if hasBackup { return true }
-            guard attempt < 3 else { break }
+            guard attempt < maxAttempts else { break }
             try? await Task.sleep(for: retryDelays[attempt - 1])
         }
 
