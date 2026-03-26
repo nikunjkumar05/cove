@@ -133,18 +133,12 @@ impl Keychain {
         }
 
         let key: [u8; 32] = rand::rng().random();
-        let hex = hex::encode(key);
-        let mut cryptor = Cryptor::new();
-        let encrypted =
-            cryptor.encrypt_to_string(&hex).map_err(|e| KeychainError::Encrypt(e.to_string()))?;
-
-        self.0.save(LOCAL_DB_KEY_CRYPTOR.into(), cryptor.serialize_to_string())?;
-
-        if let Err(e) = self.0.save(LOCAL_DB_KEY_NAME.into(), encrypted) {
-            // clean up orphaned cryptor so we don't leave partial state
-            self.0.delete(LOCAL_DB_KEY_CRYPTOR.into());
-            return Err(e);
-        }
+        self.save_with_fresh_cryptor(
+            LOCAL_DB_KEY_CRYPTOR.into(),
+            LOCAL_DB_KEY_NAME.into(),
+            &hex::encode(key),
+            true,
+        )?;
 
         Ok(key)
     }
@@ -184,6 +178,30 @@ impl Keychain {
                 }
             }
         }
+    }
+
+    fn save_with_fresh_cryptor(
+        &self,
+        cryptor_key: String,
+        value_key: String,
+        plaintext: &str,
+        cleanup_cryptor_on_failure: bool,
+    ) -> Result<(), KeychainError> {
+        let mut cryptor = Cryptor::new();
+        let encrypted = cryptor
+            .encrypt_to_string(plaintext)
+            .map_err(|error| KeychainError::Encrypt(error.to_string()))?;
+
+        self.0.save(cryptor_key.clone(), cryptor.serialize_to_string())?;
+
+        if let Err(error) = self.0.save(value_key, encrypted) {
+            if cleanup_cryptor_on_failure {
+                self.0.delete(cryptor_key);
+            }
+            return Err(error);
+        }
+
+        Ok(())
     }
 
     /// Saves CSPP passkey credentials (credential_id and PRF salt) to the keychain
@@ -229,21 +247,12 @@ impl Keychain {
         id: &WalletId,
         secret_key: Mnemonic,
     ) -> Result<(), KeychainError> {
-        // save encryption key first — orphaned key is harmless, but orphaned data without its key would be unrecoverable
-        let encryption_key_key = wallet_mnemonic_encryption_and_nonce_key_name(id);
-        let mut cryptor = Cryptor::new();
-
-        let key = wallet_mnemonic_key_name(id);
-        let encrypted_secret_key = cryptor
-            .encrypt_to_string(&secret_key.to_string())
-            .map_err(|error| KeychainError::Encrypt(error.to_string()))?;
-
-        let encryption_key = cryptor.serialize_to_string();
-
-        self.0.save(encryption_key_key, encryption_key)?;
-        self.0.save(key, encrypted_secret_key)?;
-
-        Ok(())
+        self.save_with_fresh_cryptor(
+            wallet_mnemonic_encryption_and_nonce_key_name(id),
+            wallet_mnemonic_key_name(id),
+            &secret_key.to_string(),
+            false,
+        )
     }
 
     /// Retrieves a wallet's mnemonic seed from the keychain
@@ -414,24 +423,12 @@ impl Keychain {
         id: &WalletId,
         backup: &[u8],
     ) -> Result<(), KeychainError> {
-        // create the backup hex
-        let backup_key = wallet_tap_signer_backup_key_name(id);
-        let backup_hex = hex::encode(backup);
-
-        let encryption_key_key = wallet_tap_signer_encryption_key_and_nonce_key_name(id);
-        let mut cryptor = Cryptor::new();
-
-        let encrypted_backup = cryptor
-            .encrypt_to_string(&backup_hex)
-            .map_err(|error| KeychainError::Encrypt(error.to_string()))?;
-
-        let encryption_key = cryptor.serialize_to_string();
-
-        // save encryption key first — orphaned key is harmless, but orphaned data without its key would be unrecoverable
-        self.0.save(encryption_key_key, encryption_key)?;
-        self.0.save(backup_key, encrypted_backup)?;
-
-        Ok(())
+        self.save_with_fresh_cryptor(
+            wallet_tap_signer_encryption_key_and_nonce_key_name(id),
+            wallet_tap_signer_backup_key_name(id),
+            &hex::encode(backup),
+            false,
+        )
     }
 
     pub fn get_tap_signer_backup(&self, id: &WalletId) -> Result<Option<Vec<u8>>, KeychainError> {

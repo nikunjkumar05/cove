@@ -221,6 +221,18 @@ impl StorageBootstrap {
             .map_err_display_alt(AppInitError::MainDatabaseMigration)
     }
 
+    fn initialize_local_encryption_key(&self) -> Result<std::path::PathBuf, AppInitError> {
+        let encrypted_db = cove_common::consts::ROOT_DATA_DIR.join("cove.encrypted.db");
+        let keychain = cove_device::keychain::Keychain::global();
+        let key = load_or_create_local_encryption_key(keychain, &encrypted_db)?;
+        crate::database::encrypted_backend::set_encryption_key(key);
+
+        self.set_step(BootstrapStep::EncryptionKeySet);
+        info!("Local encryption key loaded and set");
+
+        Ok(encrypted_db)
+    }
+
     fn init_migration_tracker(&mut self, bdk_count: u32) -> Arc<Migration> {
         let total = self.pending_migration_total(bdk_count);
         let migration = Arc::new(Migration::new(total, Arc::clone(&self.cancelled)));
@@ -332,40 +344,7 @@ fn do_bootstrap(track_progress: bool) -> Result<u32, AppInitError> {
     bootstrap.set_step(BootstrapStep::DerivingEncryptionKey);
     info!("Starting storage bootstrap");
 
-    // load or create local DB encryption key from keychain
-    let keychain = cove_device::keychain::Keychain::global();
-    let encrypted_db = cove_common::consts::ROOT_DATA_DIR.join("cove.encrypted.db");
-    let key = match keychain.get_local_encryption_key() {
-        Ok(Some(key)) => key,
-        Ok(None) => {
-            if encrypted_db.exists() {
-                return Err(AppInitError::DatabaseKeyMismatch(
-                    "local encryption key not found but encrypted databases exist".into(),
-                ));
-            }
-            keychain
-                .create_local_encryption_key()
-                .map_err(|e| AppInitError::KeyDerivation(e.to_string()))?
-        }
-        Err(e) => {
-            // partial keychain state: one entry exists but the other is missing
-            if encrypted_db.exists() {
-                return Err(AppInitError::DatabaseKeyMismatch(format!(
-                    "partial encryption key in keychain with existing DB: {e}"
-                )));
-            }
-            // no DB exists, safe to purge partial entries and create fresh
-            warn!("Purging partial local encryption key entries: {e}");
-            keychain.purge_local_encryption_key();
-            keychain
-                .create_local_encryption_key()
-                .map_err(|e| AppInitError::KeyDerivation(e.to_string()))?
-        }
-    };
-    crate::database::encrypted_backend::set_encryption_key(key);
-
-    bootstrap.set_step(BootstrapStep::EncryptionKeySet);
-    info!("Local encryption key loaded and set");
+    let encrypted_db = bootstrap.initialize_local_encryption_key()?;
 
     // verify the key matches the existing database before proceeding
     crate::database::encrypted_backend::verify_database_key(&encrypted_db)
@@ -390,6 +369,50 @@ fn do_bootstrap(track_progress: bool) -> Result<u32, AppInitError> {
 
     info!("Storage bootstrap complete");
     Ok(bdk_count)
+}
+
+fn load_or_create_local_encryption_key(
+    keychain: &cove_device::keychain::Keychain,
+    encrypted_db: &std::path::Path,
+) -> Result<[u8; 32], AppInitError> {
+    match keychain.get_local_encryption_key() {
+        Ok(Some(key)) => Ok(key),
+        Ok(None) => create_local_encryption_key(keychain, encrypted_db),
+        Err(error) => recover_partial_local_encryption_key(keychain, encrypted_db, error),
+    }
+}
+
+fn create_local_encryption_key(
+    keychain: &cove_device::keychain::Keychain,
+    encrypted_db: &std::path::Path,
+) -> Result<[u8; 32], AppInitError> {
+    if encrypted_db.exists() {
+        return Err(AppInitError::DatabaseKeyMismatch(
+            "local encryption key not found but encrypted databases exist".into(),
+        ));
+    }
+
+    keychain
+        .create_local_encryption_key()
+        .map_err(|error| AppInitError::KeyDerivation(error.to_string()))
+}
+
+fn recover_partial_local_encryption_key(
+    keychain: &cove_device::keychain::Keychain,
+    encrypted_db: &std::path::Path,
+    error: cove_device::keychain::KeychainError,
+) -> Result<[u8; 32], AppInitError> {
+    if encrypted_db.exists() {
+        return Err(AppInitError::DatabaseKeyMismatch(format!(
+            "partial encryption key in keychain with existing DB: {error}"
+        )));
+    }
+
+    warn!("Purging partial local encryption key entries: {error}");
+    keychain.purge_local_encryption_key();
+    keychain
+        .create_local_encryption_key()
+        .map_err(|create_error| AppInitError::KeyDerivation(create_error.to_string()))
 }
 
 /// Returns the absolute path to the root data directory

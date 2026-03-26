@@ -2,7 +2,8 @@ use std::str::FromStr as _;
 
 use cove_cspp::CsppStore as _;
 use cove_cspp::backup_data::{
-    DescriptorPair, WalletEntry, WalletMode, WalletSecret as CloudWalletSecret, wallet_record_id,
+    DescriptorPair, EncryptedWalletBackup, WalletEntry, WalletMode,
+    WalletSecret as CloudWalletSecret, wallet_record_id,
 };
 use cove_cspp::master_key_crypto;
 use cove_cspp::wallet_crypto;
@@ -30,6 +31,11 @@ pub(super) struct UnpersistedPrfKey {
     pub(super) prf_key: [u8; 32],
     pub(super) prf_salt: [u8; 32],
     pub(super) credential_id: Vec<u8>,
+}
+
+pub(super) struct DownloadedWalletBackup {
+    pub(super) metadata: WalletMetadata,
+    pub(super) entry: WalletEntry,
 }
 
 impl RustCloudBackupManager {
@@ -92,30 +98,7 @@ impl RustCloudBackupManager {
 pub(super) fn create_prf_key_without_persisting(
     passkey: &PasskeyAccess,
 ) -> Result<UnpersistedPrfKey, CloudBackupError> {
-    info!("Creating new passkey for wrapper repair");
-    let prf_salt: [u8; 32] = rand::rng().random();
-    let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
-    let user_id = rand::rng().random::<[u8; 16]>().to_vec();
-
-    let credential_id = passkey
-        .create_passkey(RP_ID.to_string(), user_id, challenge)
-        .map_err_str(CloudBackupError::Passkey)?;
-
-    let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
-    let prf_output = passkey
-        .authenticate_with_prf(
-            RP_ID.to_string(),
-            credential_id.clone(),
-            prf_salt.to_vec(),
-            challenge,
-        )
-        .map_err_str(CloudBackupError::Passkey)?;
-
-    let prf_key: [u8; 32] = prf_output
-        .try_into()
-        .map_err(|_| CloudBackupError::Internal("PRF output is not 32 bytes".into()))?;
-
-    Ok(UnpersistedPrfKey { prf_key, prf_salt, credential_id })
+    create_new_prf_key(passkey, "Creating new passkey for wrapper repair")
 }
 
 #[allow(dead_code)]
@@ -198,12 +181,11 @@ pub(super) fn try_match_namespace_with_passkey(
 
     // discovery auth with first downloaded backup's salt
     let first_prf_salt = downloaded[0].1.prf_salt;
-    let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
 
     let discovered = match passkey.discover_and_authenticate_with_prf(
         RP_ID.to_string(),
         first_prf_salt.to_vec(),
-        challenge,
+        random_challenge(),
     ) {
         Ok(result) => result,
         Err(cove_device::passkey::PasskeyError::UserCancelled)
@@ -213,10 +195,7 @@ pub(super) fn try_match_namespace_with_passkey(
         Err(error) => return Err(CloudBackupError::Passkey(error.to_string())),
     };
 
-    let prf_key: [u8; 32] = discovered
-        .prf_output
-        .try_into()
-        .map_err(|_| CloudBackupError::Internal("PRF output is not 32 bytes".into()))?;
+    let prf_key = prf_output_to_key(discovered.prf_output)?;
 
     // try first backup
     if let Ok(master_key) = master_key_crypto::decrypt_master_key(&downloaded[0].1, &prf_key) {
@@ -231,13 +210,11 @@ pub(super) fn try_match_namespace_with_passkey(
 
     // try remaining with targeted auth using each namespace's own salt
     for (ns, encrypted) in &downloaded[1..] {
-        let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
-
         let ns_prf_output = match passkey.authenticate_with_prf(
             RP_ID.to_string(),
             discovered.credential_id.clone(),
             encrypted.prf_salt.to_vec(),
-            challenge,
+            random_challenge(),
         ) {
             Ok(output) => output,
             Err(cove_device::passkey::PasskeyError::UserCancelled) => {
@@ -249,7 +226,7 @@ pub(super) fn try_match_namespace_with_passkey(
             }
         };
 
-        let ns_prf_key: [u8; 32] = match ns_prf_output.try_into() {
+        let ns_prf_key = match prf_output_to_key(ns_prf_output) {
             Ok(key) => key,
             Err(_) => continue,
         };
@@ -340,70 +317,14 @@ pub(super) fn restore_single_wallet(
         LocalWalletMode,
     )>,
 ) -> Result<(), CloudBackupError> {
-    let wallet_json = cloud
-        .download_wallet_backup(namespace.to_string(), record_id.to_string())
-        .map_err(|e| CloudBackupError::Cloud(format!("download {record_id}: {e}")))?;
+    let wallet = download_wallet_backup(cloud, namespace, record_id, critical_key)?;
 
-    let encrypted: cove_cspp::backup_data::EncryptedWalletBackup =
-        serde_json::from_slice(&wallet_json)
-            .map_err_prefix("deserialize wallet", CloudBackupError::Internal)?;
-
-    if encrypted.version != 1 {
-        let version = encrypted.version;
-        return Err(CloudBackupError::Internal(format!(
-            "unsupported wallet backup version: {version}",
-        )));
-    }
-
-    let entry = wallet_crypto::decrypt_wallet_backup(&encrypted, critical_key)
-        .map_err_prefix("decrypt wallet", CloudBackupError::Crypto)?;
-
-    let metadata: crate::wallet::metadata::WalletMetadata =
-        serde_json::from_value(entry.metadata.clone())
-            .map_err_prefix("parse wallet metadata", CloudBackupError::Internal)?;
-
-    if crate::backup::import::is_wallet_duplicate(&metadata, existing_fingerprints)
-        .inspect_err(|e| warn!("is_wallet_duplicate check failed for {}: {e}", metadata.name))
-        .unwrap_or(false)
-    {
-        info!("Skipping duplicate wallet {}", metadata.name);
+    if should_skip_duplicate_wallet(&wallet.metadata, existing_fingerprints) {
         return Ok(());
     }
 
-    let backup_model = crate::backup::model::WalletBackup {
-        metadata: entry.metadata.clone(),
-        secret: convert_cloud_secret(&entry.secret),
-        descriptors: entry.descriptors.as_ref().map(|descriptors| LocalDescriptorPair {
-            external: descriptors.external.clone(),
-            internal: descriptors.internal.clone(),
-        }),
-        xpub: entry.xpub.clone(),
-        labels_jsonl: None,
-    };
-
-    match &backup_model.secret {
-        LocalWalletSecret::Mnemonic(words) => {
-            let mnemonic = bip39::Mnemonic::from_str(words)
-                .map_err_prefix("invalid mnemonic", CloudBackupError::Internal)?;
-
-            crate::backup::import::restore_mnemonic_wallet(&metadata, mnemonic).map_err(
-                |(error, _)| {
-                    CloudBackupError::Internal(format!("restore mnemonic wallet: {error}"))
-                },
-            )?;
-        }
-        _ => {
-            crate::backup::import::restore_descriptor_wallet(&metadata, &backup_model).map_err(
-                |(error, _)| {
-                    CloudBackupError::Internal(format!("restore descriptor wallet: {error}"))
-                },
-            )?;
-        }
-    }
-
-    if let Some(fingerprint) = &metadata.master_fingerprint {
-        existing_fingerprints.push((**fingerprint, metadata.network, metadata.wallet_mode));
-    }
+    restore_downloaded_wallet(&wallet.metadata, &wallet.entry)?;
+    remember_restored_wallet_fingerprint(&wallet.metadata, existing_fingerprints);
 
     Ok(())
 }
@@ -420,34 +341,13 @@ pub(super) fn obtain_prf_key(
     keychain.delete(CSPP_CREDENTIAL_ID_KEY.to_string());
     keychain.delete(CSPP_PRF_SALT_KEY.to_string());
 
-    info!("Creating new passkey");
-    let prf_salt: [u8; 32] = rand::rng().random();
-    let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
-    let user_id = rand::rng().random::<[u8; 16]>().to_vec();
-
-    let credential_id = passkey
-        .create_passkey(RP_ID.to_string(), user_id, challenge)
-        .map_err_str(CloudBackupError::Passkey)?;
-
-    let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
-    let prf_output = passkey
-        .authenticate_with_prf(
-            RP_ID.to_string(),
-            credential_id.clone(),
-            prf_salt.to_vec(),
-            challenge,
-        )
-        .map_err_str(CloudBackupError::Passkey)?;
-
-    let prf_key: [u8; 32] = prf_output
-        .try_into()
-        .map_err(|_| CloudBackupError::Internal("PRF output is not 32 bytes".into()))?;
+    let unpersisted = create_new_prf_key(passkey, "Creating new passkey")?;
 
     keychain
-        .save_cspp_passkey(&credential_id, prf_salt)
+        .save_cspp_passkey(&unpersisted.credential_id, unpersisted.prf_salt)
         .map_err_prefix("save cspp credentials", CloudBackupError::Internal)?;
 
-    Ok((prf_key, prf_salt))
+    Ok((unpersisted.prf_key, unpersisted.prf_salt))
 }
 
 /// Try to discover an existing passkey, fall back to creating a new one
@@ -461,18 +361,14 @@ pub(super) fn discover_or_create_prf_key(
 ) -> Result<([u8; 32], [u8; 32]), CloudBackupError> {
     info!("Attempting passkey discovery before creating new");
     let prf_salt: [u8; 32] = rand::rng().random();
-    let challenge: Vec<u8> = rand::rng().random::<[u8; 32]>().to_vec();
 
     match passkey.discover_and_authenticate_with_prf(
         RP_ID.to_string(),
         prf_salt.to_vec(),
-        challenge,
+        random_challenge(),
     ) {
         Ok(discovered) => {
-            let prf_key: [u8; 32] = discovered
-                .prf_output
-                .try_into()
-                .map_err(|_| CloudBackupError::Internal("PRF output is not 32 bytes".into()))?;
+            let prf_key = prf_output_to_key(discovered.prf_output)?;
 
             info!("Discovered existing passkey, reusing");
             keychain.delete(CSPP_CREDENTIAL_ID_KEY.to_string());
@@ -495,6 +391,136 @@ pub(super) fn discover_or_create_prf_key(
             warn!("Discovery failed ({error}), falling back to create");
             obtain_prf_key(keychain, passkey)
         }
+    }
+}
+
+pub(super) fn download_wallet_backup(
+    cloud: &CloudStorage,
+    namespace: &str,
+    record_id: &str,
+    critical_key: &[u8; 32],
+) -> Result<DownloadedWalletBackup, CloudBackupError> {
+    let wallet_json = cloud
+        .download_wallet_backup(namespace.to_string(), record_id.to_string())
+        .map_err(|e| CloudBackupError::Cloud(format!("download {record_id}: {e}")))?;
+
+    let encrypted: EncryptedWalletBackup = serde_json::from_slice(&wallet_json)
+        .map_err_prefix("deserialize wallet", CloudBackupError::Internal)?;
+
+    if encrypted.version != 1 {
+        let version = encrypted.version;
+        return Err(CloudBackupError::Internal(format!(
+            "unsupported wallet backup version: {version}",
+        )));
+    }
+
+    let entry = wallet_crypto::decrypt_wallet_backup(&encrypted, critical_key)
+        .map_err_prefix("decrypt wallet", CloudBackupError::Crypto)?;
+    let metadata = serde_json::from_value(entry.metadata.clone())
+        .map_err_prefix("parse wallet metadata", CloudBackupError::Internal)?;
+
+    Ok(DownloadedWalletBackup { metadata, entry })
+}
+
+fn create_new_prf_key(
+    passkey: &PasskeyAccess,
+    log_message: &str,
+) -> Result<UnpersistedPrfKey, CloudBackupError> {
+    info!("{log_message}");
+    let prf_salt: [u8; 32] = rand::rng().random();
+    let credential_id = passkey
+        .create_passkey(
+            RP_ID.to_string(),
+            rand::rng().random::<[u8; 16]>().to_vec(),
+            random_challenge(),
+        )
+        .map_err_str(CloudBackupError::Passkey)?;
+
+    let prf_output = passkey
+        .authenticate_with_prf(
+            RP_ID.to_string(),
+            credential_id.clone(),
+            prf_salt.to_vec(),
+            random_challenge(),
+        )
+        .map_err_str(CloudBackupError::Passkey)?;
+
+    Ok(UnpersistedPrfKey { prf_key: prf_output_to_key(prf_output)?, prf_salt, credential_id })
+}
+
+fn prf_output_to_key(prf_output: Vec<u8>) -> Result<[u8; 32], CloudBackupError> {
+    prf_output
+        .try_into()
+        .map_err(|_| CloudBackupError::Internal("PRF output is not 32 bytes".into()))
+}
+
+fn random_challenge() -> Vec<u8> {
+    rand::rng().random::<[u8; 32]>().to_vec()
+}
+
+fn should_skip_duplicate_wallet(
+    metadata: &WalletMetadata,
+    existing_fingerprints: &[(crate::wallet::fingerprint::Fingerprint, Network, LocalWalletMode)],
+) -> bool {
+    if crate::backup::import::is_wallet_duplicate(metadata, existing_fingerprints)
+        .inspect_err(|e| warn!("is_wallet_duplicate check failed for {}: {e}", metadata.name))
+        .unwrap_or(false)
+    {
+        info!("Skipping duplicate wallet {}", metadata.name);
+        true
+    } else {
+        false
+    }
+}
+
+fn restore_downloaded_wallet(
+    metadata: &WalletMetadata,
+    entry: &WalletEntry,
+) -> Result<(), CloudBackupError> {
+    let backup_model = crate::backup::model::WalletBackup {
+        metadata: entry.metadata.clone(),
+        secret: convert_cloud_secret(&entry.secret),
+        descriptors: entry.descriptors.as_ref().map(|descriptors| LocalDescriptorPair {
+            external: descriptors.external.clone(),
+            internal: descriptors.internal.clone(),
+        }),
+        xpub: entry.xpub.clone(),
+        labels_jsonl: None,
+    };
+
+    match &backup_model.secret {
+        LocalWalletSecret::Mnemonic(words) => {
+            let mnemonic = bip39::Mnemonic::from_str(words)
+                .map_err_prefix("invalid mnemonic", CloudBackupError::Internal)?;
+
+            crate::backup::import::restore_mnemonic_wallet(metadata, mnemonic).map_err(
+                |(error, _)| {
+                    CloudBackupError::Internal(format!("restore mnemonic wallet: {error}"))
+                },
+            )?;
+        }
+        _ => {
+            crate::backup::import::restore_descriptor_wallet(metadata, &backup_model).map_err(
+                |(error, _)| {
+                    CloudBackupError::Internal(format!("restore descriptor wallet: {error}"))
+                },
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn remember_restored_wallet_fingerprint(
+    metadata: &WalletMetadata,
+    existing_fingerprints: &mut Vec<(
+        crate::wallet::fingerprint::Fingerprint,
+        Network,
+        LocalWalletMode,
+    )>,
+) {
+    if let Some(fingerprint) = &metadata.master_fingerprint {
+        existing_fingerprints.push((**fingerprint, metadata.network, metadata.wallet_mode));
     }
 }
 
