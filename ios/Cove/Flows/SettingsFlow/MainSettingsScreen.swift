@@ -298,11 +298,23 @@ struct MainSettingsScreen: View {
                         app.pushRoute(Route.settings(.cloudBackup))
                     }
                 case .passkeyMissing:
-                    HStack {
-                        Image(systemName: "exclamationmark.icloud")
-                            .foregroundStyle(.orange)
-                        Text("Cloud Backup — Passkey Missing")
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.icloud.fill")
+                            .foregroundStyle(.red)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Cloud Backup Passkey Missing")
+                                .foregroundStyle(.red)
+                                .fontWeight(.semibold)
+                                .lineLimit(1)
+
+                            Text("Backups can't be restored until you add a new passkey")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+
                         Spacer()
+
                         Image(systemName: "chevron.right")
                             .foregroundColor(Color(UIColor.tertiaryLabel))
                             .font(.footnote)
