@@ -163,6 +163,7 @@ pub enum HardwareWalletMetadata {
     Hash,
     Eq,
     PartialEq,
+    Display,
     uniffi::Enum,
     strum::EnumIter,
 )]

@@ -75,7 +75,14 @@ impl RustCloudBackupManager {
             match cloud.list_wallet_backups(namespace) {
                 Ok(wallet_record_ids) => {
                     let db = Database::global();
-                    let local_count = count_all_wallets(&db);
+                    let local_count = match count_all_wallets(&db) {
+                        Ok(local_count) => local_count,
+                        Err(error) => {
+                            warn!("Backup integrity: local wallet count failed: {error}");
+                            issues.push("local wallet inventory could not be read");
+                            0
+                        }
+                    };
                     let cloud_count = wallet_record_ids.len() as u32;
 
                     if local_count > cloud_count {

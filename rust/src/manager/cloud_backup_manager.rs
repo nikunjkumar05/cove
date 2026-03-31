@@ -688,11 +688,16 @@ impl RustCloudBackupManager {
 
         match current.wallet_count {
             Some(count) => Some(count),
-            None if current.is_configured() => {
-                let count = count_all_wallets(&db);
-                let _ = db.cloud_backup_state.set(&current.with_wallet_count(Some(count)));
-                Some(count)
-            }
+            None if current.is_configured() => match count_all_wallets(&db) {
+                Ok(count) => {
+                    let _ = db.cloud_backup_state.set(&current.with_wallet_count(Some(count)));
+                    Some(count)
+                }
+                Err(error) => {
+                    warn!("Failed to derive cloud backup wallet count: {error}");
+                    None
+                }
+            },
             None => None,
         }
     }
@@ -942,7 +947,15 @@ fn persisted_wallet_ids_for_catastrophic_wipe() -> Option<Vec<WalletId>> {
     };
 
     let db = db_swap.load();
-    Some(all_local_wallets(&db).into_iter().map(|wallet| wallet.id).collect())
+    match all_local_wallets(&db) {
+        Ok(wallets) => Some(wallets.into_iter().map(|wallet| wallet.id).collect()),
+        Err(error) => {
+            warn!(
+                "Failed to read wallet ids for catastrophic recovery, deriving from wallet data dir: {error}"
+            );
+            None
+        }
+    }
 }
 
 fn catastrophic_wipe_wallet_ids(
@@ -1174,6 +1187,23 @@ mod tests {
         );
 
         assert_eq!(wallet_ids, vec![WalletId::from("wallet-from-db".to_string())]);
+    }
+
+    #[test]
+    fn catastrophic_wipe_wallet_ids_falls_back_to_wallet_data_dir() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("wallet-from-dir")).unwrap();
+        std::fs::create_dir_all(dir.path().join("wallet-two")).unwrap();
+
+        let wallet_ids = catastrophic_wipe_wallet_ids(None, dir.path());
+
+        assert_eq!(
+            wallet_ids,
+            vec![
+                WalletId::from("wallet-from-dir".to_string()),
+                WalletId::from("wallet-two".to_string()),
+            ]
+        );
     }
 
     #[test]

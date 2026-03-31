@@ -58,7 +58,10 @@ impl RustCloudBackupManager {
         let listed: HashSet<_> = wallet_record_ids.iter().cloned().collect();
         cleanup_confirmed_pending_blobs(&listed);
 
-        Some(CloudBackupDetailResult::Success(build_detail_from_wallet_ids(&wallet_record_ids)))
+        match build_detail_from_wallet_ids(&wallet_record_ids) {
+            Ok(detail) => Some(CloudBackupDetailResult::Success(detail)),
+            Err(error) => Some(CloudBackupDetailResult::AccessError(error.to_string())),
+        }
     }
 }
 
@@ -89,6 +92,8 @@ pub(crate) fn cleanup_confirmed_pending_blobs(listed_ids: &HashSet<String>) {
 }
 
 /// Build a CloudBackupDetail from wallet record IDs by comparing against local wallets
-pub(crate) fn build_detail_from_wallet_ids(wallet_record_ids: &[String]) -> CloudBackupDetail {
-    CloudWalletInventory::load(wallet_record_ids).build_detail()
+pub(crate) fn build_detail_from_wallet_ids(
+    wallet_record_ids: &[String],
+) -> Result<CloudBackupDetail, super::super::CloudBackupError> {
+    Ok(CloudWalletInventory::load(wallet_record_ids)?.build_detail())
 }

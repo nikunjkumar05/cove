@@ -292,7 +292,7 @@ pub(super) fn upload_all_wallets(
 ) -> Result<Vec<String>, CloudBackupError> {
     let mut uploaded_record_ids = Vec::new();
 
-    for metadata in all_local_wallets(db) {
+    for metadata in all_local_wallets(db)? {
         let entry = build_wallet_entry(&metadata, metadata.wallet_mode)?;
         let encrypted = wallet_crypto::encrypt_wallet_entry(&entry, critical_key)
             .map_err_str(CloudBackupError::Crypto)?;
@@ -364,17 +364,31 @@ fn persist_enabled_cloud_backup_state_with_last_verified_at(
 }
 
 /// All local wallets across every network and mode
-pub(super) fn all_local_wallets(db: &Database) -> Vec<WalletMetadata> {
-    Network::iter()
-        .flat_map(|network| {
-            LocalWalletMode::iter()
-                .flat_map(move |mode| db.wallets.get_all(network, mode).unwrap_or_default())
+pub(super) fn all_local_wallets(db: &Database) -> Result<Vec<WalletMetadata>, CloudBackupError> {
+    all_local_wallets_from(|network, mode| {
+        db.wallets.get_all(network, mode).map_err(|error| {
+            CloudBackupError::Internal(format!("read wallets for {network}/{mode}: {error}"))
         })
-        .collect()
+    })
 }
 
-pub(super) fn count_all_wallets(db: &Database) -> u32 {
-    all_local_wallets(db).len() as u32
+fn all_local_wallets_from<F>(mut load_wallets: F) -> Result<Vec<WalletMetadata>, CloudBackupError>
+where
+    F: FnMut(Network, LocalWalletMode) -> Result<Vec<WalletMetadata>, CloudBackupError>,
+{
+    let mut wallets = Vec::new();
+
+    for network in Network::iter() {
+        for mode in LocalWalletMode::iter() {
+            wallets.extend(load_wallets(network, mode)?);
+        }
+    }
+
+    Ok(wallets)
+}
+
+pub(super) fn count_all_wallets(db: &Database) -> Result<u32, CloudBackupError> {
+    Ok(all_local_wallets(db)?.len() as u32)
 }
 
 pub(super) fn restore_single_wallet(
@@ -593,6 +607,29 @@ pub(super) fn convert_cloud_secret(secret: &CloudWalletSecret) -> LocalWalletSec
             LocalWalletSecret::TapSignerBackup(backup.clone())
         }
         CloudWalletSecret::Descriptor(_) | CloudWalletSecret::WatchOnly => LocalWalletSecret::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_local_wallets_from_returns_error_when_any_bucket_fails() {
+        let error = all_local_wallets_from(|network, mode| {
+            if network == Network::Testnet && mode == LocalWalletMode::Decoy {
+                return Err(CloudBackupError::Internal(
+                    "read wallets for test bucket failed".into(),
+                ));
+            }
+
+            Ok(vec![WalletMetadata::preview_new()])
+        })
+        .unwrap_err();
+
+        assert!(
+            matches!(error, CloudBackupError::Internal(message) if message == "read wallets for test bucket failed")
+        );
     }
 }
 

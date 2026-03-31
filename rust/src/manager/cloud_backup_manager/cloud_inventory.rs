@@ -3,7 +3,8 @@ use std::collections::HashSet;
 use cove_cspp::backup_data::wallet_record_id;
 
 use super::{
-    CloudBackupDetail, CloudBackupWalletItem, CloudBackupWalletStatus, cspp_master_key_record_id,
+    CloudBackupDetail, CloudBackupError, CloudBackupWalletItem, CloudBackupWalletStatus,
+    cspp_master_key_record_id,
 };
 use crate::database::Database;
 use crate::database::cloud_backup::{
@@ -19,9 +20,9 @@ pub(super) struct CloudWalletInventory {
 }
 
 impl CloudWalletInventory {
-    pub(super) fn load(wallet_record_ids: &[String]) -> Self {
+    pub(super) fn load(wallet_record_ids: &[String]) -> Result<Self, CloudBackupError> {
         let db = Database::global();
-        let local_wallets = all_local_wallets(&db);
+        let local_wallets = all_local_wallets(&db)?;
         let last_sync = db
             .cloud_backup_state
             .get()
@@ -33,7 +34,7 @@ impl CloudWalletInventory {
             .flatten();
         let cloud_wallet_record_ids = merged_cloud_wallet_record_ids(&db, wallet_record_ids);
 
-        Self::new(last_sync, local_wallets, cloud_wallet_record_ids)
+        Ok(Self::new(last_sync, local_wallets, cloud_wallet_record_ids))
     }
 
     fn new(

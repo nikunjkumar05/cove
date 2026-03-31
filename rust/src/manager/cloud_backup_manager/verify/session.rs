@@ -120,7 +120,10 @@ impl<'a> VerificationSession<'a> {
             MasterKeyResolution::Finished(result) => return Ok(result),
         };
 
-        self.verify_wallet_backups_and_autosync(&master_key)?;
+        if let Some(result) = self.verify_wallet_backups_and_autosync(&master_key) {
+            return Ok(result);
+        }
+
         Ok(self.finish_verified())
     }
 
@@ -130,7 +133,12 @@ impl<'a> VerificationSession<'a> {
                 let listed: std::collections::HashSet<_> = ids.iter().cloned().collect();
                 cleanup_confirmed_pending_blobs(&listed);
 
-                self.report.detail = Some(build_detail_from_wallet_ids(&ids));
+                let detail = match build_detail_from_wallet_ids(&ids) {
+                    Ok(detail) => detail,
+                    Err(error) => return Some(self.local_inventory_retry_result(&error)),
+                };
+
+                self.report.detail = Some(detail);
                 self.wallet_record_ids = Some(ids);
                 None
             }
@@ -308,20 +316,21 @@ impl<'a> VerificationSession<'a> {
     fn verify_wallet_backups_and_autosync(
         &mut self,
         master_key: &MasterKey,
-    ) -> Result<(), CloudBackupError> {
-        let Some(wallet_record_ids) = self.wallet_record_ids.as_ref() else {
-            return Ok(());
-        };
+    ) -> Option<DeepVerificationResult> {
+        let wallet_record_ids = self.wallet_record_ids.as_ref()?;
 
         let critical_key = Zeroizing::new(master_key.critical_data_key());
         let (verified, failed, unsupported) = self.verify_wallet_backups(&critical_key);
         self.report.wallets_verified = verified;
         self.report.wallets_failed = failed;
         self.report.wallets_unsupported = unsupported;
-        let unsynced = CloudWalletInventory::load(wallet_record_ids).unsynced_local_wallets();
+        let unsynced = match CloudWalletInventory::load(wallet_record_ids) {
+            Ok(inventory) => inventory.unsynced_local_wallets(),
+            Err(error) => return Some(self.local_inventory_retry_result(&error)),
+        };
 
         if unsynced.is_empty() {
-            return Ok(());
+            return None;
         }
 
         let count = unsynced.len() as u32;
@@ -329,7 +338,12 @@ impl<'a> VerificationSession<'a> {
         match self.manager.do_backup_wallets(&unsynced) {
             Ok(()) => {
                 if let Ok(updated_ids) = self.cloud.list_wallet_backups(self.namespace.clone()) {
-                    self.report.detail = Some(build_detail_from_wallet_ids(&updated_ids));
+                    match build_detail_from_wallet_ids(&updated_ids) {
+                        Ok(detail) => {
+                            self.report.detail = Some(detail);
+                        }
+                        Err(error) => return Some(self.local_inventory_retry_result(&error)),
+                    }
                 }
             }
             Err(error) => {
@@ -337,7 +351,7 @@ impl<'a> VerificationSession<'a> {
             }
         }
 
-        Ok(())
+        None
     }
 
     fn verify_wallet_backups(&self, critical_key: &[u8; 32]) -> (u32, u32, u32) {
@@ -395,6 +409,10 @@ impl<'a> VerificationSession<'a> {
 
     fn detail(&self) -> Option<CloudBackupDetail> {
         self.report.detail.clone()
+    }
+
+    fn local_inventory_retry_result(&self, error: &CloudBackupError) -> DeepVerificationResult {
+        self.retry_result(format!("failed to load local wallet inventory: {error}"))
     }
 
     fn retry_result(&self, message: impl Into<String>) -> DeepVerificationResult {

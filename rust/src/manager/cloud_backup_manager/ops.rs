@@ -49,7 +49,7 @@ impl RustCloudBackupManager {
         let cloud = CloudStorage::global();
         let wallet_record_ids =
             cloud.list_wallet_backups(namespace).map_err_str(CloudBackupError::Cloud)?;
-        let inventory = CloudWalletInventory::load(&wallet_record_ids);
+        let inventory = CloudWalletInventory::load(&wallet_record_ids)?;
 
         info!(
             "Sync: found {} wallet(s) in cloud (including pending)",
@@ -75,7 +75,7 @@ impl RustCloudBackupManager {
             cloud.list_wallet_backups(namespace.clone()).map_err_str(CloudBackupError::Cloud)?;
 
         let db = Database::global();
-        let local_record_ids: std::collections::HashSet<_> = all_local_wallets(&db)
+        let local_record_ids: std::collections::HashSet<_> = all_local_wallets(&db)?
             .iter()
             .map(|wallet| cove_cspp::backup_data::wallet_record_id(wallet.id.as_ref()))
             .collect();
@@ -137,7 +137,7 @@ impl RustCloudBackupManager {
         let critical_key = Zeroizing::new(master_key.critical_data_key());
 
         let db = Database::global();
-        let mut existing_fingerprints: Vec<_> = all_local_wallets(&db)
+        let mut existing_fingerprints: Vec<_> = all_local_wallets(&db)?
             .iter()
             .filter_map(|wallet| {
                 wallet
