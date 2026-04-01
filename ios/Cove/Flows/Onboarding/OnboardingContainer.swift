@@ -47,9 +47,7 @@ struct OnboardingContainer: View {
                     manager.app.reloadWallets()
 
                     // auto-select first restored wallet so user lands in it
-                    if let wallet = manager.app.wallets.first {
-                        manager.app.selectWallet(wallet.id)
-                    }
+                    if let wallet = manager.app.wallets.first { manager.app.selectWallet(wallet.id) }
 
                     onComplete()
                 }

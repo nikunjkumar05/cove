@@ -116,9 +116,7 @@ final class PasskeyProviderImpl: PasskeyProvider, @unchecked Sendable {
             Log.error("[PASSKEY] assertion.prf is nil — authenticator did not return PRF output")
         }
 
-        guard let prfKey = assertion.prf?.first else {
-            throw PasskeyError.AuthenticationFailed("PRF output not available")
-        }
+        guard let prfKey = assertion.prf?.first else { throw PasskeyError.AuthenticationFailed("PRF output not available") }
 
         let prfOutput = prfKey.withUnsafeBytes { Data($0) }
 
@@ -226,9 +224,7 @@ final class PasskeyProviderImpl: PasskeyProvider, @unchecked Sendable {
             throw PasskeyError.NoCredentialFound
         }
 
-        guard let prfKey = assertion.prf?.first else {
-            throw PasskeyError.AuthenticationFailed("PRF output not available")
-        }
+        guard let prfKey = assertion.prf?.first else { throw PasskeyError.AuthenticationFailed("PRF output not available") }
 
         let prfOutput = prfKey.withUnsafeBytes { Data($0) }
 
@@ -255,12 +251,8 @@ private class PasskeyDelegate: NSObject, ASAuthorizationControllerDelegate,
 
     func waitForResult() throws -> ASAuthorizationCredential {
         let status = semaphore.wait(timeout: .now() + 120)
-        if status == .timedOut {
-            throw PasskeyError.AuthenticationFailed("passkey operation timed out after 120s")
-        }
-        guard let result else {
-            throw PasskeyError.AuthenticationFailed("no result received from delegate")
-        }
+        if status == .timedOut { throw PasskeyError.AuthenticationFailed("passkey operation timed out after 120s") }
+        guard let result else { throw PasskeyError.AuthenticationFailed("no result received from delegate") }
         return try result.get()
     }
 

@@ -172,9 +172,7 @@ final class ICloudDriveHelper: @unchecked Sendable {
     }
 
     func backupFileURL(namespace: String, recordId: String) throws -> URL {
-        if recordId == csppMasterKeyRecordId() {
-            return try masterKeyFileURL(namespace: namespace)
-        }
+        if recordId == csppMasterKeyRecordId() { return try masterKeyFileURL(namespace: namespace) }
 
         return try walletFileURL(namespace: namespace, recordId: recordId)
     }
@@ -189,9 +187,7 @@ final class ICloudDriveHelper: @unchecked Sendable {
     // MARK: - File coordination
 
     private func coordinatedCreateDirectory(at url: URL) throws {
-        guard !FileManager.default.fileExists(atPath: url.path) else {
-            return
-        }
+        guard !FileManager.default.fileExists(atPath: url.path) else { return }
 
         var coordinatorError: NSError?
         var createError: Error?
@@ -304,9 +300,7 @@ final class ICloudDriveHelper: @unchecked Sendable {
         }
 
         if let error = coordinatorError ?? deleteError {
-            if Self.isNoSuchFileError(error) {
-                throw CloudStorageError.NotFound(missingItemID)
-            }
+            if Self.isNoSuchFileError(error) { throw CloudStorageError.NotFound(missingItemID) }
             throw CloudStorageError.UploadFailed("delete failed: \(error.localizedDescription)")
         }
     }
@@ -531,9 +525,7 @@ final class ICloudDriveHelper: @unchecked Sendable {
                 lastProgressLog = now
             }
 
-            if case .current = state {
-                return
-            }
+            if case .current = state { return }
 
             if case let .failed(error) = state {
                 throw CloudStorageError.DownloadFailed(
@@ -572,17 +564,11 @@ final class ICloudDriveHelper: @unchecked Sendable {
             return .unknown
         }
 
-        guard values.isUbiquitousItem == true else {
-            return .notUbiquitous
-        }
+        guard values.isUbiquitousItem == true else { return .notUbiquitous }
 
-        if values.ubiquitousItemIsUploaded == true {
-            return .uploaded
-        }
+        if values.ubiquitousItemIsUploaded == true { return .uploaded }
 
-        if let error = values.ubiquitousItemUploadingError {
-            return .failed(error)
-        }
+        if let error = values.ubiquitousItemUploadingError { return .failed(error) }
 
         return .uploading
     }
@@ -627,21 +613,13 @@ final class ICloudDriveHelper: @unchecked Sendable {
             return .unknown
         }
 
-        guard values.isUbiquitousItem == true else {
-            return .notUbiquitous
-        }
+        guard values.isUbiquitousItem == true else { return .notUbiquitous }
 
-        if values.ubiquitousItemDownloadingStatus == .current {
-            return .current
-        }
+        if values.ubiquitousItemDownloadingStatus == .current { return .current }
 
-        if let error = values.ubiquitousItemDownloadingError {
-            return .failed(error)
-        }
+        if let error = values.ubiquitousItemDownloadingError { return .failed(error) }
 
-        if values.ubiquitousItemIsDownloading == true {
-            return .downloading
-        }
+        if values.ubiquitousItemIsDownloading == true { return .downloading }
 
         return .notDownloaded
     }
@@ -734,9 +712,7 @@ final class ICloudDriveHelper: @unchecked Sendable {
     }
 
     func uploadStatus(for url: URL) -> UploadStatus {
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            return .unknown
-        }
+        guard FileManager.default.fileExists(atPath: url.path) else { return .unknown }
 
         switch uploadState(for: url) {
         case .uploaded: return .uploaded

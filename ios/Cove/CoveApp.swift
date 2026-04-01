@@ -17,9 +17,7 @@ struct SafeAreaInsetsKey: EnvironmentKey {
     static var defaultValue: EdgeInsets {
         #if os(iOS) || os(tvOS)
             let window = (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.keyWindow
-            guard let insets = window?.safeAreaInsets else {
-                return EdgeInsets()
-            }
+            guard let insets = window?.safeAreaInsets else { return EdgeInsets() }
             return EdgeInsets(
                 top: insets.top, leading: insets.left, bottom: insets.bottom, trailing: insets.right
             )
@@ -139,9 +137,7 @@ extension CoveApp {
             group.addTask { try await .completed(warning: bootstrap()) }
             group.addTask { try await self.bootstrapWatchdog() }
 
-            guard let result = try await group.next() else {
-                throw BootstrapTimeoutError()
-            }
+            guard let result = try await group.next() else { throw BootstrapTimeoutError() }
             group.cancelAll()
 
             switch result {
@@ -278,9 +274,7 @@ extension CoveApp {
             let warning = await Task.detached {
                 CloudBackupManager.shared.rust.verifyBackupIntegrity()
             }.value
-            if let warning {
-                Log.error("[STARTUP] backup integrity warning: \(warning)")
-            }
+            if let warning { Log.error("[STARTUP] backup integrity warning: \(warning)") }
         }
     }
 }

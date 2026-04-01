@@ -14,9 +14,7 @@ private final class MetadataQuerySession<Value> {
         guard !didSignal else { return }
         didSignal = true
         finalizeWorkItem?.cancel()
-        if disableUpdates {
-            query.disableUpdates()
-        }
+        if disableUpdates { query.disableUpdates() }
         self.value = value
         query.stop()
         box.removeAll()
@@ -30,9 +28,7 @@ private final class MetadataQuerySession<Value> {
     }
 
     func wait(timeout: TimeInterval) -> Value? {
-        guard semaphore.wait(timeout: .now() + timeout) != .timedOut else {
-            return nil
-        }
+        guard semaphore.wait(timeout: .now() + timeout) != .timedOut else { return nil }
         return value
     }
 }
@@ -188,9 +184,7 @@ extension ICloudDriveHelper {
             }
         )
 
-        guard let result else {
-            throw CloudStorageError.NotAvailable("iCloud metadata query timed out")
-        }
+        guard let result else { throw CloudStorageError.NotAvailable("iCloud metadata query timed out") }
 
         switch result {
         case let .success(results):
@@ -236,12 +230,8 @@ extension ICloudDriveHelper {
     }
 
     private static func metadataPath(for item: NSMetadataItem) -> String? {
-        if let path = item.value(forAttribute: NSMetadataItemPathKey) as? String {
-            return resolvedPath(path)
-        }
-        if let url = item.value(forAttribute: NSMetadataItemURLKey) as? URL {
-            return resolvedPath(url.path)
-        }
+        if let path = item.value(forAttribute: NSMetadataItemPathKey) as? String { return resolvedPath(path) }
+        if let url = item.value(forAttribute: NSMetadataItemURLKey) as? URL { return resolvedPath(url.path) }
         return nil
     }
 
@@ -253,16 +243,10 @@ extension ICloudDriveHelper {
         let prefix = resolvedParent + "/"
 
         for index in 0 ..< query.resultCount {
-            guard let item = query.result(at: index) as? NSMetadataItem else {
-                continue
-            }
-            guard let itemName = item.value(forAttribute: NSMetadataItemFSNameKey) as? String else {
-                continue
-            }
+            guard let item = query.result(at: index) as? NSMetadataItem else { continue }
+            guard let itemName = item.value(forAttribute: NSMetadataItemFSNameKey) as? String else { continue }
             guard itemName == name else { continue }
-            guard let metadataURL = item.value(forAttribute: NSMetadataItemURLKey) as? URL else {
-                continue
-            }
+            guard let metadataURL = item.value(forAttribute: NSMetadataItemURLKey) as? URL else { continue }
             let metadataPath = Self.metadataPath(for: item)
             if let metadataPath, metadataPath.hasPrefix(prefix) {
                 return ResolvedMetadataItem(url: metadataURL, metadataPath: metadataPath)
@@ -412,9 +396,7 @@ extension ICloudDriveHelper {
             }
         )
 
-        guard let result else {
-            throw MetadataLookupError.timedOut("iCloud metadata query timed out for \(name)")
-        }
+        guard let result else { throw MetadataLookupError.timedOut("iCloud metadata query timed out for \(name)") }
 
         switch result {
         case let .failure(failure):
@@ -517,9 +499,7 @@ extension ICloudDriveHelper {
 
     func metadataSubdirectoryNames(parentDirectoryURL: URL) throws -> [String] {
         try metadataNames(parentDirectoryURL: parentDirectoryURL) { relativePath in
-            guard let firstComponent = relativePath.split(separator: "/").first else {
-                return nil
-            }
+            guard let firstComponent = relativePath.split(separator: "/").first else { return nil }
             return String(firstComponent)
         }
     }
@@ -539,17 +519,11 @@ extension ICloudDriveHelper {
         under resolvedParent: String
     ) -> ResolvedMetadataItem? {
         let prefix = resolvedParent + "/"
-        guard let itemName = item.value(forAttribute: NSMetadataItemFSNameKey) as? String else {
-            return nil
-        }
+        guard let itemName = item.value(forAttribute: NSMetadataItemFSNameKey) as? String else { return nil }
         guard itemName == name else { return nil }
-        guard let metadataURL = item.value(forAttribute: NSMetadataItemURLKey) as? URL else {
-            return nil
-        }
+        guard let metadataURL = item.value(forAttribute: NSMetadataItemURLKey) as? URL else { return nil }
         let metadataPath = Self.metadataPath(for: item)
-        guard let metadataPath, metadataPath.hasPrefix(prefix) else {
-            return nil
-        }
+        guard let metadataPath, metadataPath.hasPrefix(prefix) else { return nil }
 
         return ResolvedMetadataItem(url: metadataURL, metadataPath: metadataPath)
     }

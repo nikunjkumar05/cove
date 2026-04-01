@@ -246,9 +246,7 @@ struct CoveMainView: View {
         Binding(
             get: { app.alertState != nil },
             set: { newValue in
-                if !newValue {
-                    app.alertState = .none
-                }
+                if !newValue { app.alertState = .none }
             }
         )
     }
@@ -332,9 +330,7 @@ struct CoveMainView: View {
             app.alertState = TaggedItem(.importedSuccessfully)
 
             // if we're not already on this wallet, navigate to it
-            if app.walletManager?.id != id {
-                try app.rust.selectWallet(id: id)
-            }
+            if app.walletManager?.id != id { try app.rust.selectWallet(id: id) }
 
             // upgrade watch-only → cold in-place
             if app.walletManager?.id == id, app.walletManager?.walletMetadata.walletType != .hot {
@@ -343,9 +339,7 @@ struct CoveMainView: View {
         } catch let WalletError.WalletAlreadyExists(id) {
             app.alertState = TaggedItem(.duplicateWallet(walletId: id))
 
-            if (try? app.rust.selectWallet(id: id)) == nil {
-                app.alertState = TaggedItem(.unableToSelectWallet)
-            }
+            if (try? app.rust.selectWallet(id: id)) == nil { app.alertState = TaggedItem(.unableToSelectWallet) }
         } catch {
             app.alertState = TaggedItem(
                 .errorImportingHardwareWallet(message: error.localizedDescription)
@@ -690,9 +684,7 @@ struct CoveMainView: View {
             }
         }
 
-        if newPhase == .background {
-            app.isSidebarVisible = false
-        }
+        if newPhase == .background { app.isSidebarVisible = false }
 
         // close all open sheets when going into the background
         if auth.isAuthEnabled, newPhase == .background {
@@ -822,9 +814,7 @@ struct CoveMainView: View {
             keepShowingCloudBackupVerificationPrompt = true
             scheduleCloudBackupVerificationPrompt()
         case .idle:
-            if !CloudBackupManager.shared.shouldPromptVerification {
-                keepShowingCloudBackupVerificationPrompt = false
-            }
+            if !CloudBackupManager.shared.shouldPromptVerification { keepShowingCloudBackupVerificationPrompt = false }
         }
     }
 

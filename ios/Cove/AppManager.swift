@@ -67,9 +67,7 @@ private let walletModeChangeDelayMs = 250
     }
 
     private static func requireBootstrapComplete() {
-        if ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1" {
-            return
-        }
+        if ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] == "1" { return }
 
         let step = bootstrapProgress()
         guard step == .complete else {
@@ -300,9 +298,7 @@ private let walletModeChangeDelayMs = 250
                 wallets = (try? database.wallets().all()) ?? []
 
             case let .clearCachedWalletManager(walletId):
-                if walletManager?.id == walletId {
-                    walletManager = nil
-                }
+                if walletManager?.id == walletId { walletManager = nil }
 
             case .showLoadingPopup:
                 Task { await MiddlePopup(state: .loading).present() }

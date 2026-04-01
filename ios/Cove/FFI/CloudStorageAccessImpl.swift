@@ -41,9 +41,7 @@ final class CloudStorageAccessImpl: CloudStorageAccess, @unchecked Sendable {
             named: url.lastPathComponent,
             parentDirectoryURL: url.deletingLastPathComponent()
         )?.url
-        guard let resolvedURL else {
-            throw CloudStorageError.NotFound(recordId)
-        }
+        guard let resolvedURL else { throw CloudStorageError.NotFound(recordId) }
 
         try helper.coordinatedDelete(at: resolvedURL, missingItemID: recordId)
     }
@@ -58,9 +56,7 @@ final class CloudStorageAccessImpl: CloudStorageAccess, @unchecked Sendable {
     func listWalletFiles(namespace: String) throws -> [String] {
         let namespacesRoot = try helper.namespacesRootReadURL()
         let namespaces = try helper.listSubdirectories(parentPath: namespacesRoot.path)
-        guard namespaces.contains(namespace) else {
-            throw CloudStorageError.NotFound(namespace)
-        }
+        guard namespaces.contains(namespace) else { throw CloudStorageError.NotFound(namespace) }
 
         let nsDir = try helper.namespaceDirectoryReadURL(namespace: namespace)
         return try helper.listFiles(namespacePath: nsDir.path, prefix: "wallet-")
