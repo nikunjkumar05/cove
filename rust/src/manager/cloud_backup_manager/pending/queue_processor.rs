@@ -43,6 +43,7 @@ impl PendingUploadVerifier<'_> {
             return true;
         }
 
+        self.0.finalize_pending_verification_if_ready();
         self.finish_pass(&queue)
     }
 

@@ -54,14 +54,20 @@ final class CloudBackupManager: AnyReconciler, CloudBackupManagerReconciler, @un
         state.hasPendingUploadVerification
     }
 
+    var isBackgroundVerifying: Bool {
+        guard hasPendingUploadVerification else { return false }
+        if case .verifying = verification { return true }
+        return false
+    }
+
     var shouldPromptVerification: Bool {
+        if isBackgroundVerifying { return false }
         state.shouldPromptVerification
     }
 
     var isUnverified: Bool {
-        if case .needsVerification = state.verificationMetadata {
-            return true
-        }
+        if isBackgroundVerifying { return false }
+        if case .needsVerification = state.verificationMetadata { return true }
 
         return false
     }

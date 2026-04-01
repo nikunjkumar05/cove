@@ -10,8 +10,8 @@ use zeroize::Zeroizing;
 
 use super::super::{
     CloudBackupDetail, CloudBackupError, DeepVerificationFailure, DeepVerificationReport,
-    DeepVerificationResult, PASSKEY_RP_ID, RustCloudBackupManager, VerificationFailureKind,
-    cloud_inventory::CloudWalletInventory,
+    DeepVerificationResult, PASSKEY_RP_ID, PendingVerificationCompletion, RustCloudBackupManager,
+    VerificationFailureKind, cloud_inventory::CloudWalletInventory,
 };
 use super::load_stored_credential_id;
 use super::passkey_auth::PasskeyAuthOutcome;
@@ -370,9 +370,17 @@ impl<'a> VerificationSession<'a> {
             "Deep verify: auto-sync finished but {remaining_count} local wallet(s) are still missing in cloud"
         );
 
-        Some(self.retry_result(format!(
-            "{remaining_count} local wallet backup(s) are still missing in iCloud after auto-sync"
-        )))
+        let uploaded_record_ids = unsynced
+            .iter()
+            .map(|wallet| cove_cspp::backup_data::wallet_record_id(wallet.id.as_ref()))
+            .collect();
+        self.manager.replace_pending_verification_completion(PendingVerificationCompletion::new(
+            self.report.clone(),
+            self.namespace.clone(),
+            uploaded_record_ids,
+        ));
+
+        Some(DeepVerificationResult::AwaitingUploadConfirmation(self.report.clone()))
     }
 
     fn verify_wallet_backups(&self, critical_key: &[u8; 32]) -> (u32, u32, u32) {

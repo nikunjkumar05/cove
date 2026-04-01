@@ -151,17 +151,19 @@ impl RustCloudBackupManager {
     }
 
     fn handle_start_verification(&self, force_discoverable: bool) {
+        self.clear_pending_verification_completion();
         self.set_verification(VerificationState::Verifying);
 
         let result = self.deep_verify_cloud_backup(force_discoverable);
 
         match result {
             DeepVerificationResult::Verified(report) => {
-                if let Some(detail) = &report.detail {
-                    self.set_detail(Some(detail.clone()));
+                self.apply_verified_report(report);
+            }
+            DeepVerificationResult::AwaitingUploadConfirmation(report) => {
+                if let Some(detail) = report.detail {
+                    self.set_detail(Some(detail));
                 }
-                self.set_verification(VerificationState::Verified(report));
-                self.set_recovery(RecoveryState::Idle);
             }
             DeepVerificationResult::PasskeyConfirmed(detail) => {
                 if let Some(detail) = detail {
@@ -184,10 +186,7 @@ impl RustCloudBackupManager {
             }
             DeepVerificationResult::NotEnabled => {}
             DeepVerificationResult::Failed(failure) => {
-                if let Some(detail) = failure.detail.clone() {
-                    self.set_detail(Some(detail));
-                }
-                self.set_verification(VerificationState::Failed(failure));
+                self.apply_failed_verification(failure);
             }
         }
     }

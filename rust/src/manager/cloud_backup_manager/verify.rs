@@ -3,13 +3,16 @@ mod session;
 mod wrapper_repair;
 
 use cove_cspp::CsppStore as _;
+use cove_cspp::backup_data::EncryptedWalletBackup;
 use cove_cspp::master_key::MasterKey;
 use cove_cspp::master_key_crypto;
+use cove_cspp::wallet_crypto;
 use cove_device::cloud_storage::{CloudStorage, CloudStorageError};
 use cove_device::keychain::{CSPP_CREDENTIAL_ID_KEY, CSPP_PRF_SALT_KEY, Keychain};
 use cove_device::passkey::PasskeyAccess;
 use cove_util::ResultExt as _;
 use tracing::{error, info, warn};
+use zeroize::Zeroizing;
 
 use self::passkey_auth::{PasskeyAuthOutcome, PasskeyAuthPolicy, authenticate_with_policy};
 use self::session::VerificationSession;
@@ -17,14 +20,22 @@ use self::wrapper_repair::{WrapperRepairOperation, WrapperRepairStrategy};
 use super::wallets::{count_all_wallets, persist_enabled_cloud_backup_state};
 use super::{
     CloudBackupDetailResult, CloudBackupError, CloudBackupStatus, DeepVerificationFailure,
-    DeepVerificationResult, RustCloudBackupManager, VerificationFailureKind,
+    DeepVerificationReport, DeepVerificationResult, PendingVerificationCompletion,
+    RustCloudBackupManager, VerificationFailureKind,
 };
 use crate::database::Database;
 use crate::database::cloud_backup::{PersistedCloudBackupState, PersistedCloudBackupStatus};
+use crate::manager::cloud_backup_detail_manager::{RecoveryState, VerificationState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IntegrityDowngrade {
     Unverified,
+}
+
+enum PendingWalletVerificationOutcome {
+    Verified,
+    Failed,
+    Unsupported,
 }
 
 impl RustCloudBackupManager {
@@ -124,6 +135,7 @@ impl RustCloudBackupManager {
             return DeepVerificationResult::NotEnabled;
         }
 
+        self.clear_pending_verification_completion();
         let result = match self.do_deep_verify_cloud_backup(force_discoverable) {
             Ok(result) => result,
             Err(error) => {
@@ -153,6 +165,7 @@ impl RustCloudBackupManager {
                 new_state.last_verified_at =
                     Some(jiff::Timestamp::now().as_second().try_into().unwrap_or(0));
             }
+            DeepVerificationResult::AwaitingUploadConfirmation(_) => return,
             DeepVerificationResult::PasskeyConfirmed(_) => return,
             DeepVerificationResult::PasskeyMissing(_) => {
                 new_state.status = PersistedCloudBackupStatus::PasskeyMissing;
@@ -169,6 +182,21 @@ impl RustCloudBackupManager {
         {
             error!("Failed to persist verification state: {error}");
         }
+    }
+
+    pub(crate) fn finalize_pending_verification_if_ready(&self) {
+        let Some(completion) = self.pending_verification_completion() else { return };
+
+        if !self.pending_verification_uploads_confirmed(&completion) {
+            return;
+        }
+
+        match self.finalize_pending_verification(completion.clone()) {
+            Ok(report) => self.apply_verified_report(report),
+            Err(failure) => self.apply_failed_verification(failure),
+        }
+
+        self.clear_pending_verification_completion();
     }
 
     pub(crate) fn mark_verification_required_after_wallet_change(&self) {
@@ -256,6 +284,146 @@ impl RustCloudBackupManager {
         }
 
         Ok(())
+    }
+
+    fn pending_verification_uploads_confirmed(
+        &self,
+        completion: &PendingVerificationCompletion,
+    ) -> bool {
+        let pending = Database::global()
+            .cloud_upload_queue
+            .get()
+            .ok()
+            .flatten()
+            .map(|queue| queue.items)
+            .unwrap_or_default();
+
+        let listed_ids = CloudStorage::global()
+            .list_wallet_backups(completion.namespace_id().to_string())
+            .ok()
+            .map(|ids| ids.into_iter().collect::<std::collections::HashSet<_>>())
+            .unwrap_or_default();
+
+        completion.record_ids().iter().all(|record_id| {
+            if listed_ids.contains(record_id) {
+                return true;
+            }
+
+            let pending_item = pending.iter().find(|item| {
+                item.namespace_id == completion.namespace_id() && item.record_id == *record_id
+            });
+
+            pending_item.is_some_and(|item| item.is_confirmed())
+        })
+    }
+
+    fn finalize_pending_verification(
+        &self,
+        completion: PendingVerificationCompletion,
+    ) -> Result<DeepVerificationReport, DeepVerificationFailure> {
+        let cspp = cove_cspp::Cspp::new(Keychain::global().clone());
+        let master_key = cspp
+            .load_master_key_from_store()
+            .map_err_prefix("load local master key", CloudBackupError::Internal)
+            .map_err(|error| self.pending_verification_failure(&completion, error.to_string()))?
+            .ok_or_else(|| {
+                self.pending_verification_failure(&completion, "no local master key available")
+            })?;
+
+        let critical_key = Zeroizing::new(master_key.critical_data_key());
+        let mut report = completion.report().clone();
+
+        for record_id in completion.record_ids() {
+            match self.verify_pending_wallet_backup(&completion, record_id, &critical_key)? {
+                PendingWalletVerificationOutcome::Verified => report.wallets_verified += 1,
+                PendingWalletVerificationOutcome::Failed => report.wallets_failed += 1,
+                PendingWalletVerificationOutcome::Unsupported => report.wallets_unsupported += 1,
+            }
+        }
+
+        report.detail = self.pending_verification_detail(&completion);
+        Ok(report)
+    }
+
+    fn verify_pending_wallet_backup(
+        &self,
+        completion: &PendingVerificationCompletion,
+        record_id: &str,
+        critical_key: &[u8; 32],
+    ) -> Result<PendingWalletVerificationOutcome, DeepVerificationFailure> {
+        let cloud = CloudStorage::global();
+        let download = cloud
+            .download_wallet_backup(completion.namespace_id().to_string(), record_id.to_string());
+        let wallet_json = match download {
+            Ok(wallet_json) => wallet_json,
+            Err(error) => {
+                warn!("Pending verification: failed to download wallet {record_id}: {error}");
+                return Ok(PendingWalletVerificationOutcome::Failed);
+            }
+        };
+
+        let encrypted: EncryptedWalletBackup =
+            serde_json::from_slice(&wallet_json).map_err(|error| {
+                self.pending_verification_failure(
+                    completion,
+                    format!("deserialize wallet {record_id}: {error}"),
+                )
+            })?;
+
+        if encrypted.version != 1 {
+            return Ok(PendingWalletVerificationOutcome::Unsupported);
+        }
+
+        match wallet_crypto::decrypt_wallet_backup(&encrypted, critical_key) {
+            Ok(_) => Ok(PendingWalletVerificationOutcome::Verified),
+            Err(error) => {
+                warn!("Pending verification: failed to decrypt wallet {record_id}: {error}");
+                Ok(PendingWalletVerificationOutcome::Failed)
+            }
+        }
+    }
+
+    fn pending_verification_detail(
+        &self,
+        completion: &PendingVerificationCompletion,
+    ) -> Option<super::CloudBackupDetail> {
+        match self.refresh_cloud_backup_detail() {
+            Some(CloudBackupDetailResult::Success(detail)) => Some(detail),
+            Some(CloudBackupDetailResult::AccessError(error)) => {
+                warn!("Pending verification: failed to refresh detail: {error}");
+                completion.report().detail.clone()
+            }
+            None => completion.report().detail.clone(),
+        }
+    }
+
+    fn pending_verification_failure(
+        &self,
+        completion: &PendingVerificationCompletion,
+        message: impl Into<String>,
+    ) -> DeepVerificationFailure {
+        DeepVerificationFailure {
+            kind: VerificationFailureKind::Retry,
+            message: message.into(),
+            detail: self.pending_verification_detail(completion),
+        }
+    }
+
+    pub(crate) fn apply_verified_report(&self, report: DeepVerificationReport) {
+        self.persist_verification_result(&DeepVerificationResult::Verified(report.clone()));
+        if let Some(detail) = &report.detail {
+            self.set_detail(Some(detail.clone()));
+        }
+        self.set_verification(VerificationState::Verified(report));
+        self.set_recovery(RecoveryState::Idle);
+    }
+
+    pub(crate) fn apply_failed_verification(&self, failure: DeepVerificationFailure) {
+        self.persist_verification_result(&DeepVerificationResult::Failed(failure.clone()));
+        if let Some(detail) = failure.detail.clone() {
+            self.set_detail(Some(detail));
+        }
+        self.set_verification(VerificationState::Failed(failure));
     }
 
     pub(crate) fn do_deep_verify_cloud_backup(

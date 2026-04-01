@@ -768,6 +768,12 @@ struct CoveMainView: View {
     }
 
     private func scheduleCloudBackupVerificationPrompt() {
+        if CloudBackupManager.shared.isBackgroundVerifying {
+            keepShowingCloudBackupVerificationPrompt = false
+            showCloudBackupVerificationPrompt = false
+            return
+        }
+
         if keepShowingCloudBackupVerificationPrompt {
             guard canPresentCloudBackupVerificationPrompt else {
                 showCloudBackupVerificationPrompt = false
@@ -805,6 +811,9 @@ struct CoveMainView: View {
     private func handleCloudBackupVerificationChange(_ verification: VerificationState) {
         switch verification {
         case .verified, .passkeyConfirmed, .cancelled:
+            keepShowingCloudBackupVerificationPrompt = false
+            showCloudBackupVerificationPrompt = false
+        case .verifying where CloudBackupManager.shared.isBackgroundVerifying:
             keepShowingCloudBackupVerificationPrompt = false
             showCloudBackupVerificationPrompt = false
         case .failed:
@@ -944,7 +953,16 @@ struct CoveMainView: View {
             .onChange(of: CloudBackupManager.shared.shouldPromptVerification) { _, shouldPrompt in
                 if shouldPrompt {
                     scheduleCloudBackupVerificationPrompt()
-                } else if !keepShowingCloudBackupVerificationPrompt {
+                    return
+                }
+
+                if CloudBackupManager.shared.isBackgroundVerifying {
+                    keepShowingCloudBackupVerificationPrompt = false
+                    showCloudBackupVerificationPrompt = false
+                    return
+                }
+
+                if !keepShowingCloudBackupVerificationPrompt {
                     showCloudBackupVerificationPrompt = false
                 }
             }

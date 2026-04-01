@@ -158,6 +158,7 @@ pub struct CloudBackupDetail {
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum DeepVerificationResult {
     Verified(DeepVerificationReport),
+    AwaitingUploadConfirmation(DeepVerificationReport),
     PasskeyConfirmed(Option<CloudBackupDetail>),
     PasskeyMissing(Option<CloudBackupDetail>),
     UserCancelled(Option<CloudBackupDetail>),
@@ -252,6 +253,13 @@ pub(crate) struct PendingEnableSession {
     passkey: Zeroizing<UnpersistedPrfKey>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PendingVerificationCompletion {
+    report: DeepVerificationReport,
+    namespace_id: String,
+    record_ids: Vec<String>,
+}
+
 impl std::fmt::Debug for PendingEnableSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PendingEnableSession").finish_non_exhaustive()
@@ -267,6 +275,24 @@ impl PendingEnableSession {
         self,
     ) -> (Zeroizing<cove_cspp::master_key::MasterKey>, Zeroizing<UnpersistedPrfKey>) {
         (self.master_key, self.passkey)
+    }
+}
+
+impl PendingVerificationCompletion {
+    fn new(report: DeepVerificationReport, namespace_id: String, record_ids: Vec<String>) -> Self {
+        Self { report, namespace_id, record_ids }
+    }
+
+    pub(crate) fn report(&self) -> &DeepVerificationReport {
+        &self.report
+    }
+
+    pub(crate) fn namespace_id(&self) -> &str {
+        &self.namespace_id
+    }
+
+    pub(crate) fn record_ids(&self) -> &[String] {
+        &self.record_ids
     }
 }
 
@@ -314,6 +340,7 @@ pub struct RustCloudBackupManager {
     pub reconciler: Sender<Message>,
     pub reconcile_receiver: Arc<Receiver<Message>>,
     pending_enable_session: Arc<Mutex<Option<PendingEnableSession>>>,
+    pending_verification_completion: Arc<Mutex<Option<PendingVerificationCompletion>>>,
     pending_upload_verifier_running: Arc<AtomicBool>,
     pending_upload_verifier_wakeup: Arc<Notify>,
     restore_operation_id: Arc<AtomicU64>,
@@ -354,6 +381,7 @@ impl RustCloudBackupManager {
             reconciler: sender,
             reconcile_receiver: Arc::new(receiver),
             pending_enable_session: Arc::new(Mutex::new(None)),
+            pending_verification_completion: Arc::new(Mutex::new(None)),
             pending_upload_verifier_running: Arc::new(AtomicBool::new(false)),
             pending_upload_verifier_wakeup: Arc::new(Notify::new()),
             restore_operation_id: Arc::new(AtomicU64::new(0)),
@@ -627,6 +655,21 @@ impl RustCloudBackupManager {
         self.pending_enable_session.lock().take();
     }
 
+    pub(crate) fn replace_pending_verification_completion(
+        &self,
+        completion: PendingVerificationCompletion,
+    ) {
+        *self.pending_verification_completion.lock() = Some(completion);
+    }
+
+    pub(crate) fn pending_verification_completion(&self) -> Option<PendingVerificationCompletion> {
+        self.pending_verification_completion.lock().clone()
+    }
+
+    pub(crate) fn clear_pending_verification_completion(&self) {
+        self.pending_verification_completion.lock().take();
+    }
+
     fn start_background_operation<F>(
         self: Arc<Self>,
         operation_name: &str,
@@ -772,6 +815,7 @@ impl RustCloudBackupManager {
         let _ = db.cloud_backup_state.delete();
         let _ = db.cloud_upload_queue.delete();
 
+        self.clear_pending_verification_completion();
         self.set_progress(None);
         self.set_restore_progress(None);
         self.set_restore_report(None);
