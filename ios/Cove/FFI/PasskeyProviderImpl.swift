@@ -305,8 +305,10 @@ private class PasskeyExistenceDelegate: NSObject, ASAuthorizationControllerDeleg
 {
     let semaphore = DispatchSemaphore(value: 0)
     var presence: PasskeyCredentialPresence = .indeterminate
+    private var didRequestPresentationAnchor = false
 
     func presentationAnchor(for _: ASAuthorizationController) -> ASPresentationAnchor {
+        didRequestPresentationAnchor = true
         let scenes = UIApplication.shared.connectedScenes
         let windowScene = scenes.first as? UIWindowScene
         return windowScene?.keyWindow ?? ASPresentationAnchor()
@@ -326,23 +328,19 @@ private class PasskeyExistenceDelegate: NSObject, ASAuthorizationControllerDeleg
         didCompleteWithError error: Error
     ) {
         if let authError = error as? ASAuthorizationError {
-            let noCredentialsAvailable = error.localizedDescription.localizedCaseInsensitiveContains(
-                "no credentials available"
-            )
-
             if authError.code == .notInteractive {
                 presence = .missing
                 Log.info(
-                    "[PASSKEY] presence check failed with notInteractive code=\(authError.code.rawValue) description=\(error.localizedDescription)"
+                    "[PASSKEY] presence check classified missing code=\(authError.code.rawValue) requested_ui=\(didRequestPresentationAnchor) description=\(error.localizedDescription)"
                 )
-            } else if authError.code == .canceled, noCredentialsAvailable {
+            } else if authError.code == .canceled, !didRequestPresentationAnchor {
                 presence = .missing
                 Log.info(
-                    "[PASSKEY] presence check reclassified canceled as missing code=\(authError.code.rawValue) description=\(error.localizedDescription)"
+                    "[PASSKEY] presence check classified missing after silent cancellation code=\(authError.code.rawValue) requested_ui=\(didRequestPresentationAnchor) description=\(error.localizedDescription)"
                 )
             } else {
                 Log.warn(
-                    "[PASSKEY] presence check failed with auth error code=\(authError.code.rawValue) description=\(error.localizedDescription)"
+                    "[PASSKEY] presence check failed with auth error code=\(authError.code.rawValue) requested_ui=\(didRequestPresentationAnchor) description=\(error.localizedDescription)"
                 )
             }
         } else {
