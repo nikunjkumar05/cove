@@ -16,9 +16,7 @@ use super::super::{
 use super::load_stored_credential_id;
 use super::passkey_auth::PasskeyAuthOutcome;
 use super::wrapper_repair::{WrapperRepairError, WrapperRepairOperation, WrapperRepairStrategy};
-use crate::manager::cloud_backup_manager::pending::{
-    build_detail_from_wallet_ids, cleanup_confirmed_pending_blobs,
-};
+use crate::manager::cloud_backup_manager::pending::cleanup_confirmed_pending_blobs;
 
 const RECREATE_WARNING: &str = "Recreating from this device will remove references to wallets that only exist in the cloud backup";
 const REINITIALIZE_WARNING: &str = "This will replace your entire cloud backup set. Wallets that only exist in the cloud backup will be lost";
@@ -133,12 +131,12 @@ impl<'a> VerificationSession<'a> {
                 let listed: std::collections::HashSet<_> = ids.iter().cloned().collect();
                 cleanup_confirmed_pending_blobs(&listed);
 
-                let detail = match build_detail_from_wallet_ids(&ids) {
-                    Ok(detail) => detail,
+                let inventory = match CloudWalletInventory::load_strict(&ids) {
+                    Ok(inventory) => inventory,
                     Err(error) => return Some(self.local_inventory_retry_result(&error)),
                 };
 
-                self.report.detail = Some(detail);
+                self.report.detail = Some(inventory.build_detail());
                 self.wallet_record_ids = Some(ids);
                 None
             }
@@ -315,14 +313,15 @@ impl<'a> VerificationSession<'a> {
         &mut self,
         master_key: &MasterKey,
     ) -> Option<DeepVerificationResult> {
-        let wallet_record_ids = self.wallet_record_ids.as_ref()?;
+        let wallet_record_ids = self.wallet_record_ids.clone()?;
 
         let critical_key = Zeroizing::new(master_key.critical_data_key());
         let (verified, failed, unsupported) = self.verify_wallet_backups(&critical_key);
         self.report.wallets_verified = verified;
         self.report.wallets_failed = failed;
         self.report.wallets_unsupported = unsupported;
-        let unsynced = match CloudWalletInventory::load(wallet_record_ids) {
+
+        let unsynced = match CloudWalletInventory::load_strict(&wallet_record_ids) {
             Ok(inventory) => inventory.unsynced_local_wallets(),
             Err(error) => return Some(self.local_inventory_retry_result(&error)),
         };
@@ -333,23 +332,47 @@ impl<'a> VerificationSession<'a> {
 
         let count = unsynced.len() as u32;
         info!("Deep verify: {count} local wallet(s) not in cloud, auto-syncing");
-        match self.manager.do_backup_wallets(&unsynced) {
-            Ok(()) => {
-                if let Ok(updated_ids) = self.cloud.list_wallet_backups(self.namespace.clone()) {
-                    match build_detail_from_wallet_ids(&updated_ids) {
-                        Ok(detail) => {
-                            self.report.detail = Some(detail);
-                        }
-                        Err(error) => return Some(self.local_inventory_retry_result(&error)),
-                    }
-                }
-            }
-            Err(error) => {
-                warn!("Deep verify: auto-sync failed: {error}");
-            }
+        if let Err(error) = self.manager.do_backup_wallets(&unsynced) {
+            warn!("Deep verify: auto-sync failed: {error}");
+            return Some(
+                self.retry_result(format!("failed to auto-sync missing wallet backups: {error}")),
+            );
         }
 
-        None
+        let updated_ids = match self.cloud.list_wallet_backups(self.namespace.clone()) {
+            Ok(updated_ids) => updated_ids,
+            Err(error) => {
+                warn!("Deep verify: failed to re-check wallet backups after auto-sync: {error}");
+                return Some(self.retry_result(format!(
+                    "failed to re-check wallet backups after auto-sync: {error}"
+                )));
+            }
+        };
+
+        let listed: std::collections::HashSet<_> = updated_ids.iter().cloned().collect();
+        cleanup_confirmed_pending_blobs(&listed);
+
+        let inventory = match CloudWalletInventory::load_strict(&updated_ids) {
+            Ok(inventory) => inventory,
+            Err(error) => return Some(self.local_inventory_retry_result(&error)),
+        };
+
+        let remaining_unsynced = inventory.unsynced_local_wallets();
+        self.report.detail = Some(inventory.build_detail());
+        self.wallet_record_ids = Some(updated_ids);
+
+        if remaining_unsynced.is_empty() {
+            return None;
+        }
+
+        let remaining_count = remaining_unsynced.len();
+        warn!(
+            "Deep verify: auto-sync finished but {remaining_count} local wallet(s) are still missing in cloud"
+        );
+
+        Some(self.retry_result(format!(
+            "{remaining_count} local wallet backup(s) are still missing in iCloud after auto-sync"
+        )))
     }
 
     fn verify_wallet_backups(&self, critical_key: &[u8; 32]) -> (u32, u32, u32) {

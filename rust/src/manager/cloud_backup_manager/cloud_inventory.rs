@@ -23,16 +23,17 @@ impl CloudWalletInventory {
     pub(super) fn load(wallet_record_ids: &[String]) -> Result<Self, CloudBackupError> {
         let db = Database::global();
         let local_wallets = all_local_wallets(&db)?;
-        let last_sync = db
-            .cloud_backup_state
-            .get()
-            .ok()
-            .and_then(|state| {
-                (!matches!(state.status, PersistedCloudBackupStatus::Disabled))
-                    .then_some(state.last_sync)
-            })
-            .flatten();
+        let last_sync = last_sync(&db);
         let cloud_wallet_record_ids = merged_cloud_wallet_record_ids(&db, wallet_record_ids);
+
+        Ok(Self::new(last_sync, local_wallets, cloud_wallet_record_ids))
+    }
+
+    pub(super) fn load_strict(wallet_record_ids: &[String]) -> Result<Self, CloudBackupError> {
+        let db = Database::global();
+        let local_wallets = all_local_wallets(&db)?;
+        let last_sync = last_sync(&db);
+        let cloud_wallet_record_ids = listed_cloud_wallet_record_ids(wallet_record_ids, &[], false);
 
         Ok(Self::new(last_sync, local_wallets, cloud_wallet_record_ids))
     }
@@ -93,14 +94,35 @@ impl CloudWalletInventory {
     }
 }
 
+fn last_sync(db: &Database) -> Option<u64> {
+    let state = db.cloud_backup_state.get().ok()?;
+    match state.status {
+        PersistedCloudBackupStatus::Disabled => None,
+        PersistedCloudBackupStatus::Enabled
+        | PersistedCloudBackupStatus::Unverified
+        | PersistedCloudBackupStatus::PasskeyMissing => state.last_sync,
+    }
+}
+
 pub(super) fn merged_cloud_wallet_record_ids(
     db: &Database,
     wallet_record_ids: &[String],
 ) -> HashSet<String> {
+    let pending_items =
+        db.cloud_upload_queue.get().ok().flatten().map(|queue| queue.items).unwrap_or_default();
+
+    listed_cloud_wallet_record_ids(wallet_record_ids, &pending_items, true)
+}
+
+fn listed_cloud_wallet_record_ids(
+    wallet_record_ids: &[String],
+    pending_items: &[PendingCloudUploadItem],
+    include_pending_uploads: bool,
+) -> HashSet<String> {
     let mut cloud_wallet_record_ids: HashSet<_> = wallet_record_ids.iter().cloned().collect();
 
-    if let Ok(Some(queue)) = db.cloud_upload_queue.get() {
-        merge_pending_wallet_record_ids(&mut cloud_wallet_record_ids, &queue.items);
+    if include_pending_uploads {
+        merge_pending_wallet_record_ids(&mut cloud_wallet_record_ids, pending_items);
     }
 
     cloud_wallet_record_ids
@@ -210,5 +232,30 @@ mod tests {
 
         assert_eq!(unsynced.len(), 1);
         assert_eq!(unsynced[0].id, wallet_b.id);
+    }
+
+    #[test]
+    fn listed_cloud_wallet_record_ids_can_ignore_pending_uploads() {
+        let wallet_a = WalletMetadata::preview_new();
+        let wallet_b = WalletMetadata::preview_new();
+        let pending_items = vec![PendingCloudUploadItem {
+            kind: CloudUploadKind::BackupBlob,
+            namespace_id: "ns-1".into(),
+            record_id: wallet_record_id(wallet_b.id.as_ref()),
+            enqueued_at: 0,
+            verification: CloudUploadVerificationState::Pending {
+                attempt_count: 0,
+                last_checked_at: None,
+            },
+        }];
+
+        let strict_ids = listed_cloud_wallet_record_ids(
+            &[wallet_record_id(wallet_a.id.as_ref())],
+            &pending_items,
+            false,
+        );
+
+        assert!(strict_ids.contains(&wallet_record_id(wallet_a.id.as_ref())));
+        assert!(!strict_ids.contains(&wallet_record_id(wallet_b.id.as_ref())));
     }
 }

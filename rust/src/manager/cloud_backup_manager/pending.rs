@@ -16,7 +16,7 @@ use crate::database::cloud_backup::{
     CloudUploadKind, CloudUploadVerificationState, PendingCloudUploadItem,
 };
 
-pub(crate) use detail::{build_detail_from_wallet_ids, cleanup_confirmed_pending_blobs};
+pub(crate) use detail::cleanup_confirmed_pending_blobs;
 
 const MAX_PENDING_UPLOAD_VERIFICATION_DELAY: Duration = Duration::from_secs(10);
 
