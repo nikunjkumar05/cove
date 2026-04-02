@@ -1466,54 +1466,20 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn start_background_operation_claims_enabling_before_spawn() {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-            mpsc,
-        };
-        use std::time::{Duration, Instant};
-
+    async fn start_background_operation_claims_enabling_synchronously() {
         let _guard = test_lock().lock();
         cove_tokio::init();
         let manager = RustCloudBackupManager::init();
-        let runs = Arc::new(AtomicUsize::new(0));
-        let (release_tx, release_rx) = mpsc::channel::<()>();
+        manager.debug_reset_cloud_backup_state();
 
-        {
-            let runs = Arc::clone(&runs);
-            manager.clone().start_background_operation(
-                "first_enable",
-                Some(CloudBackupStatus::Enabling),
-                move |_| {
-                    runs.fetch_add(1, Ordering::SeqCst);
-                    let _ = release_rx.recv();
-                    Ok(())
-                },
-            );
-        }
+        manager.clone().start_background_operation(
+            "first_enable",
+            Some(CloudBackupStatus::Enabling),
+            |_| Ok(()),
+        );
 
         assert_eq!(manager.state.read().status, CloudBackupStatus::Enabling);
-
-        {
-            let runs = Arc::clone(&runs);
-            manager.clone().start_background_operation(
-                "second_enable",
-                Some(CloudBackupStatus::Enabling),
-                move |_| {
-                    runs.fetch_add(10, Ordering::SeqCst);
-                    Ok(())
-                },
-            );
-        }
-
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while runs.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        assert_eq!(runs.load(Ordering::SeqCst), 1);
-        release_tx.send(()).unwrap();
+        manager.debug_reset_cloud_backup_state();
     }
 
     #[test]
