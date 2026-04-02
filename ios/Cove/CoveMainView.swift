@@ -253,6 +253,7 @@ struct CoveMainView: View {
 
     private var canPresentMissingPasskeyAlert: Bool {
         phase == .active &&
+            auth.lockState == .unlocked &&
             !showCover &&
             app.alertState == nil &&
             app.sheetState == nil &&
@@ -261,6 +262,7 @@ struct CoveMainView: View {
 
     private var canPresentCloudBackupVerificationPrompt: Bool {
         phase == .active &&
+            auth.lockState == .unlocked &&
             !showCover &&
             app.alertState == nil &&
             app.sheetState == nil &&
@@ -597,6 +599,15 @@ struct CoveMainView: View {
         }
         .onChange(of: auth.lockState) { old, new in
             Log.warn("AUTH LOCK STATE CHANGED: \(old) --> \(new)")
+
+            if new == .unlocked {
+                scheduleMissingPasskeyAlert()
+                scheduleCloudBackupVerificationPrompt()
+                return
+            }
+
+            showMissingPasskeyAlert = false
+            showCloudBackupVerificationPrompt = false
         }
         .environment(app)
         .environment(auth)
@@ -1050,67 +1061,70 @@ private struct CloudBackupVerificationPromptView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Spacer()
+        ScrollView(.vertical) {
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
 
-                if !isVerifying {
-                    Button(action: onDismiss) {
-                        Image(systemName: "xmark")
-                            .font(.headline)
-                            .foregroundStyle(.white.opacity(0.85))
-                            .frame(width: 44, height: 44)
+                    if !isVerifying {
+                        Button(action: onDismiss) {
+                            Image(systemName: "xmark")
+                                .font(.headline)
+                                .foregroundStyle(.white.opacity(0.85))
+                                .frame(width: 44, height: 44)
+                        }
                     }
                 }
-            }
-            .padding(.top, 4)
+                .padding(.top, 4)
 
-            Spacer()
-                .frame(height: 20)
+                Spacer()
+                    .frame(height: 20)
 
-            heroView
+                heroView
 
-            Spacer()
-                .frame(height: 36)
+                Spacer()
+                    .frame(height: 36)
 
-            VStack(spacing: 12) {
-                HStack {
-                    Text(title)
-                        .font(.system(size: 38, weight: .semibold))
-                        .foregroundStyle(.white)
+                VStack(spacing: 12) {
+                    HStack {
+                        Text(title)
+                            .font(.system(size: 38, weight: .semibold))
+                            .foregroundStyle(.white)
 
-                    Spacer()
+                        Spacer()
+                    }
+
+                    HStack {
+                        Text(message)
+                            .font(OnboardingRecoveryTypography.body)
+                            .foregroundStyle(.coveLightGray.opacity(0.76))
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Spacer()
+                    }
                 }
 
-                HStack {
-                    Text(message)
-                        .font(OnboardingRecoveryTypography.body)
-                        .foregroundStyle(.coveLightGray.opacity(0.76))
-                        .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                    .frame(height: 28)
 
-                    Spacer()
+                Divider()
+                    .overlay(Color.coveLightGray.opacity(0.14))
+
+                Spacer(minLength: 24)
+
+                if !isVerifying {
+                    VStack(spacing: 14) {
+                        Button(primaryButtonTitle, action: onVerify)
+                            .buttonStyle(OnboardingPrimaryButtonStyle())
+
+                        Button("Later", action: onDismiss)
+                            .buttonStyle(OnboardingSecondaryButtonStyle())
+                    }
                 }
+
+                Spacer(minLength: 0)
             }
-
-            Spacer()
-                .frame(height: 28)
-
-            Divider()
-                .overlay(Color.coveLightGray.opacity(0.14))
-
-            Spacer(minLength: 24)
-
-            if !isVerifying {
-                VStack(spacing: 14) {
-                    Button(primaryButtonTitle, action: onVerify)
-                        .buttonStyle(OnboardingPrimaryButtonStyle())
-
-                    Button("Later", action: onDismiss)
-                        .buttonStyle(OnboardingSecondaryButtonStyle())
-                }
-            }
-
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
         .padding(.horizontal, 28)
         .padding(.bottom, 28)

@@ -227,10 +227,6 @@ impl RustCloudBackupManager {
 
     pub(crate) fn do_enable_cloud_backup(&self) -> Result<(), CloudBackupError> {
         self.clear_pending_enable_session();
-        self.set_progress(None);
-        self.set_restore_progress(None);
-        self.set_restore_report(None);
-        self.set_status(CloudBackupStatus::Enabling);
 
         let passkey = PasskeyAccess::global();
         if !passkey.is_prf_supported() {

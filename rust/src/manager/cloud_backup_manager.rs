@@ -715,7 +715,49 @@ impl RustCloudBackupManager {
     ) where
         F: FnOnce(Arc<Self>) -> Result<(), CloudBackupError> + Send + 'static,
     {
-        {
+        if let Some(status) = entering_status.clone() {
+            let (
+                progress_changed,
+                restore_progress_changed,
+                restore_report_changed,
+                status_changed,
+            ) = {
+                let mut state = self.state.write();
+                let current_status = state.status.clone();
+                if matches!(
+                    current_status,
+                    CloudBackupStatus::Enabling | CloudBackupStatus::Restoring
+                ) {
+                    warn!("{operation_name} called while {current_status:?}, ignoring");
+                    return;
+                }
+
+                let progress_changed = state.progress.take().is_some();
+                let restore_progress_changed = state.restore_progress.take().is_some();
+                let restore_report_changed =
+                    matches!(status, CloudBackupStatus::Enabling | CloudBackupStatus::Restoring)
+                        && state.restore_report.take().is_some();
+                let status_changed = state.status != status;
+                if status_changed {
+                    state.status = status.clone();
+                }
+
+                (progress_changed, restore_progress_changed, restore_report_changed, status_changed)
+            };
+
+            if progress_changed {
+                self.send(Message::ProgressChanged(None));
+            }
+            if restore_progress_changed {
+                self.send(Message::RestoreProgressChanged(None));
+            }
+            if restore_report_changed {
+                self.send(Message::RestoreReportChanged(None));
+            }
+            if status_changed {
+                self.send(Message::StatusChanged(status));
+            }
+        } else {
             let status = self.state.read().status.clone();
             if matches!(status, CloudBackupStatus::Enabling | CloudBackupStatus::Restoring) {
                 warn!("{operation_name} called while {status:?}, ignoring");
@@ -725,15 +767,6 @@ impl RustCloudBackupManager {
 
         let operation_name = operation_name.to_owned();
         cove_tokio::task::spawn_blocking(move || {
-            if let Some(status) = entering_status {
-                self.set_progress(None);
-                self.set_restore_progress(None);
-                if matches!(status, CloudBackupStatus::Enabling | CloudBackupStatus::Restoring) {
-                    self.set_restore_report(None);
-                }
-                self.set_status(status);
-            }
-
             if let Err(error) = work(self.clone()) {
                 error!("{operation_name} failed: {error}");
                 self.set_progress(None);
@@ -900,7 +933,7 @@ impl RustCloudBackupManager {
     pub(crate) fn enable_cloud_backup(&self) {
         CLOUD_BACKUP_MANAGER.clone().start_background_operation(
             "enable_cloud_backup",
-            None,
+            Some(CloudBackupStatus::Enabling),
             |this| this.do_enable_cloud_backup(),
         );
     }
@@ -1430,6 +1463,57 @@ mod tests {
 
         assert!(matches!(error, CloudBackupError::Cancelled));
         assert!(!ran);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn start_background_operation_claims_enabling_before_spawn() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        };
+        use std::time::{Duration, Instant};
+
+        let _guard = test_lock().lock();
+        cove_tokio::init();
+        let manager = RustCloudBackupManager::init();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+
+        {
+            let runs = Arc::clone(&runs);
+            manager.clone().start_background_operation(
+                "first_enable",
+                Some(CloudBackupStatus::Enabling),
+                move |_| {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    let _ = release_rx.recv();
+                    Ok(())
+                },
+            );
+        }
+
+        assert_eq!(manager.state.read().status, CloudBackupStatus::Enabling);
+
+        {
+            let runs = Arc::clone(&runs);
+            manager.clone().start_background_operation(
+                "second_enable",
+                Some(CloudBackupStatus::Enabling),
+                move |_| {
+                    runs.fetch_add(10, Ordering::SeqCst);
+                    Ok(())
+                },
+            );
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while runs.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        release_tx.send(()).unwrap();
     }
 
     #[test]
