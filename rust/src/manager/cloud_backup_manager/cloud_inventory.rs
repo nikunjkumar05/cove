@@ -161,7 +161,7 @@ impl CloudWalletInventory {
         match self.remote_wallet_state(wallet) {
             RemoteWalletState::Matching(_) => CloudBackupWalletStatus::Confirmed,
             RemoteWalletState::Unsupported => {
-                sync_status_from_state(sync_state, CloudBackupWalletStatus::RemoteStateUnknown)
+                sync_status_from_state(sync_state, CloudBackupWalletStatus::UnsupportedVersion)
             }
             RemoteWalletState::Unknown => sync_status_for_unknown_remote(sync_state),
             RemoteWalletState::Missing | RemoteWalletState::Stale(_) => {
@@ -643,7 +643,7 @@ mod tests {
 
         assert_eq!(
             inventory.sync_status_for_wallet(&wallet),
-            CloudBackupWalletStatus::RemoteStateUnknown
+            CloudBackupWalletStatus::UnsupportedVersion
         );
         assert!(inventory.upload_candidate_wallets().is_empty());
 
@@ -651,6 +651,6 @@ mod tests {
 
         assert_eq!(detail.needs_sync.len(), 1);
         assert_eq!(detail.needs_sync[0].record_id, wallet.record_id);
-        assert_eq!(detail.needs_sync[0].sync_status, CloudBackupWalletStatus::RemoteStateUnknown);
+        assert_eq!(detail.needs_sync[0].sync_status, CloudBackupWalletStatus::UnsupportedVersion);
     }
 }

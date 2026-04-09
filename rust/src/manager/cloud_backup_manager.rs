@@ -1411,16 +1411,6 @@ pub(crate) fn ensure_cloud_backup_test_tokio_runtime() {
 
 #[cfg(test)]
 impl RustCloudBackupManager {
-    pub(crate) fn run_wallet_upload_for_test(&self, wallet_id: WalletId) {
-        let runtime = self.runtime.clone();
-        std::thread::spawn(move || {
-            cove_tokio::task::block_on(call!(runtime.run_wallet_upload_inline_for_test(wallet_id)))
-                .expect("run wallet upload");
-        })
-        .join()
-        .expect("wallet upload test thread");
-    }
-
     pub(crate) fn clear_wallet_upload_debouncers_for_test(&self) {
         let runtime = self.runtime.clone();
         std::thread::spawn(move || {
@@ -1456,18 +1446,28 @@ mod tests {
     }
 
     fn init_manager() -> Arc<RustCloudBackupManager> {
-        cove_tokio::init();
+        super::ensure_cloud_backup_test_tokio_runtime();
         RustCloudBackupManager::init()
     }
 
     fn new_restore_operation(manager: &RustCloudBackupManager) -> RestoreOperation {
-        cove_tokio::task::block_on(call!(manager.runtime.new_restore_operation()))
-            .expect("create restore operation")
+        let runtime = manager.runtime.clone();
+        std::thread::spawn(move || {
+            cove_tokio::task::block_on(call!(runtime.new_restore_operation()))
+                .expect("create restore operation")
+        })
+        .join()
+        .expect("create restore operation thread")
     }
 
     fn invalidate_restore_operation(manager: &RustCloudBackupManager) {
-        cove_tokio::task::block_on(call!(manager.runtime.invalidate_restore_operation()))
-            .expect("invalidate restore operation");
+        let runtime = manager.runtime.clone();
+        std::thread::spawn(move || {
+            cove_tokio::task::block_on(call!(runtime.invalidate_restore_operation()))
+                .expect("invalidate restore operation");
+        })
+        .join()
+        .expect("invalidate restore operation thread");
     }
 
     #[test]

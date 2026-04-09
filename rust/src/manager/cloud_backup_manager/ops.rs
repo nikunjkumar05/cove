@@ -1928,7 +1928,7 @@ mod tests {
         let detail = manager.state().detail.expect("expected cloud backup detail");
         assert_eq!(detail.needs_sync.len(), 1);
         assert_eq!(detail.needs_sync[0].record_id, record_id);
-        assert_eq!(detail.needs_sync[0].sync_status, CloudBackupWalletStatus::RemoteStateUnknown);
+        assert_eq!(detail.needs_sync[0].sync_status, CloudBackupWalletStatus::UnsupportedVersion);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1937,14 +1937,9 @@ mod tests {
         cove_tokio::init();
         let globals = test_globals();
         let manager = RustCloudBackupManager::init();
-        globals.reset();
+        reset_cloud_backup_test_state(&manager, globals);
 
         let metadata = xpub_only_wallet_metadata();
-        Database::global()
-            .wallets()
-            .save_all_wallets(metadata.network, metadata.wallet_mode, Vec::new())
-            .unwrap();
-        Database::global().cloud_blob_sync_states.delete_all().unwrap();
 
         let master_key = cove_cspp::master_key::MasterKey::generate();
         let namespace = master_key.namespace_id();

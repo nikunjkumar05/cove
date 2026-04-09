@@ -643,3 +643,17 @@ impl PendingUploadRetryBackoff {
         self.0 = build_pending_upload_backoff();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_upload_retry_backoff_caps_at_max_delay() {
+        let mut backoff = PendingUploadRetryBackoff::new();
+
+        for _ in 0..10 {
+            assert!(backoff.next_delay() <= MAX_PENDING_UPLOAD_VERIFICATION_DELAY);
+        }
+    }
+}
