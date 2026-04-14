@@ -142,19 +142,6 @@ struct OnboardingContainer: View {
                 onSaved: { manager.dispatch(.secretWordsSaved) }
             )
 
-        case .verifyWords:
-            if let walletId = manager.rust.currentWalletId() {
-                VerifyWordsContainer(
-                    id: walletId,
-                    onVerified: { manager.dispatch(.verifyWordsCompleted) }
-                )
-            } else {
-                OnboardingErrorScreen(
-                    title: "Unable to verify words",
-                    message: "The wallet was created, but the verification state could not be loaded."
-                )
-            }
-
         case .exchangeFunding:
             OnboardingExchangeFundingView(
                 walletId: manager.rust.currentWalletId(),

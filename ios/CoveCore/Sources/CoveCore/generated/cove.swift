@@ -24589,7 +24589,6 @@ public enum OnboardingStep: Equatable, Hashable {
     case backupWallet
     case cloudBackup
     case secretWords
-    case verifyWords
     case exchangeFunding
     case hardwareImport
     case softwareImport
@@ -24641,15 +24640,13 @@ public struct FfiConverterTypeOnboardingStep: FfiConverterRustBuffer {
         
         case 13: return .secretWords
         
-        case 14: return .verifyWords
+        case 14: return .exchangeFunding
         
-        case 15: return .exchangeFunding
+        case 15: return .hardwareImport
         
-        case 16: return .hardwareImport
+        case 16: return .softwareImport
         
-        case 17: return .softwareImport
-        
-        case 18: return .terms
+        case 17: return .terms
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -24711,24 +24708,20 @@ public struct FfiConverterTypeOnboardingStep: FfiConverterRustBuffer {
             writeInt(&buf, Int32(13))
         
         
-        case .verifyWords:
+        case .exchangeFunding:
             writeInt(&buf, Int32(14))
         
         
-        case .exchangeFunding:
+        case .hardwareImport:
             writeInt(&buf, Int32(15))
         
         
-        case .hardwareImport:
+        case .softwareImport:
             writeInt(&buf, Int32(16))
         
         
-        case .softwareImport:
-            writeInt(&buf, Int32(17))
-        
-        
         case .terms:
-            writeInt(&buf, Int32(18))
+            writeInt(&buf, Int32(17))
         
         }
     }

@@ -14,6 +14,7 @@ use crate::{
     mnemonic::{Mnemonic as StoredMnemonic, MnemonicExt, NumberOfBip39Words},
     network::Network,
     pending_wallet::PendingWallet,
+    router::{HotWalletRoute, NewWalletRoute, Route},
     wallet::{
         Wallet,
         fingerprint::Fingerprint,
@@ -40,7 +41,6 @@ pub enum OnboardingStep {
     BackupWallet,
     CloudBackup,
     SecretWords,
-    VerifyWords,
     ExchangeFunding,
     HardwareImport,
     SoftwareImport,
@@ -149,13 +149,19 @@ pub trait OnboardingManagerReconciler: Send + Sync + std::fmt::Debug + 'static {
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum CompletionTarget {
     SelectLatestOrNew,
-    SelectWallet(WalletId),
+    SelectWallet { wallet_id: WalletId, post_onboarding: PostOnboardingDestination },
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum PostOnboardingDestination {
+    None,
+    VerifyWords,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum TermsContext {
     SelectLatestOrNew,
-    SelectWallet(WalletId),
+    SelectWallet { wallet_id: WalletId, post_onboarding: PostOnboardingDestination },
     StartupRestoreRecovery,
 }
 
@@ -224,7 +230,6 @@ enum FlowState {
     BackupWallet(CreatedWalletFlow),
     CloudBackup(CloudBackupFlow),
     SecretWords(CreatedWalletFlow),
-    VerifyWords(CreatedWalletFlow),
     ExchangeFunding(CreatedWalletFlow),
     HardwareImport,
     SoftwareImport,
@@ -462,8 +467,17 @@ impl RustOnboardingManager {
                 FfiApp::global().select_latest_or_new_wallet();
                 Ok(())
             }
-            CompletionTarget::SelectWallet(wallet_id) => {
-                FfiApp::global().select_wallet(wallet_id, None).map_err(|error| error.to_string())
+            CompletionTarget::SelectWallet { wallet_id, post_onboarding } => {
+                let next_route = match post_onboarding {
+                    PostOnboardingDestination::None => None,
+                    PostOnboardingDestination::VerifyWords => Some(Route::NewWallet(
+                        NewWalletRoute::HotWallet(HotWalletRoute::VerifyWords(wallet_id.clone())),
+                    )),
+                };
+
+                FfiApp::global()
+                    .select_wallet(wallet_id, next_route)
+                    .map_err(|error| error.to_string())
             }
         };
 
@@ -746,9 +760,16 @@ impl FlowState {
             (
                 Self::CloudBackup(CloudBackupFlow::SoftwareImport { wallet_id }),
                 OnboardingAction::CloudBackupEnabled,
-            ) => {
-                (Self::terms(TermsContext::SelectWallet(wallet_id), None), TransitionCommand::None)
-            }
+            ) => (
+                Self::terms(
+                    TermsContext::SelectWallet {
+                        wallet_id,
+                        post_onboarding: PostOnboardingDestination::None,
+                    },
+                    None,
+                ),
+                TransitionCommand::None,
+            ),
             (
                 Self::CloudBackup(CloudBackupFlow::CreatedWallet(flow)),
                 OnboardingAction::SkipCloudBackup,
@@ -756,46 +777,72 @@ impl FlowState {
             (
                 Self::CloudBackup(CloudBackupFlow::SoftwareImport { wallet_id }),
                 OnboardingAction::SkipCloudBackup,
-            ) => {
-                (Self::terms(TermsContext::SelectWallet(wallet_id), None), TransitionCommand::None)
-            }
+            ) => (
+                Self::terms(
+                    TermsContext::SelectWallet {
+                        wallet_id,
+                        post_onboarding: PostOnboardingDestination::None,
+                    },
+                    None,
+                ),
+                TransitionCommand::None,
+            ),
             (Self::BackupWallet(flow), OnboardingAction::ContinueFromBackup)
                 if flow.secret_words_saved || flow.cloud_backup_enabled =>
             {
                 if flow.branch == OnboardingBranch::Exchange {
                     (Self::ExchangeFunding(flow), TransitionCommand::None)
-                } else if flow.cloud_backup_enabled {
+                } else {
+                    let post_onboarding = if flow.cloud_backup_enabled {
+                        PostOnboardingDestination::None
+                    } else {
+                        PostOnboardingDestination::VerifyWords
+                    };
+
                     (
                         Self::terms(
-                            TermsContext::SelectWallet(flow.wallet_id.clone()),
+                            TermsContext::SelectWallet {
+                                wallet_id: flow.wallet_id.clone(),
+                                post_onboarding,
+                            },
                             Some(OnboardingProgress::from(&flow)),
                         ),
                         TransitionCommand::None,
                     )
-                } else {
-                    (Self::VerifyWords(flow), TransitionCommand::None)
                 }
             }
             (Self::ExchangeFunding(flow), OnboardingAction::ContinueFromExchangeFunding) => {
-                if flow.cloud_backup_enabled {
-                    (
-                        Self::terms(
-                            TermsContext::SelectWallet(flow.wallet_id.clone()),
-                            Some(OnboardingProgress::from(&flow)),
-                        ),
-                        TransitionCommand::None,
-                    )
+                let post_onboarding = if flow.cloud_backup_enabled {
+                    PostOnboardingDestination::None
                 } else {
-                    (Self::VerifyWords(flow), TransitionCommand::None)
-                }
+                    PostOnboardingDestination::VerifyWords
+                };
+
+                (
+                    Self::terms(
+                        TermsContext::SelectWallet {
+                            wallet_id: flow.wallet_id.clone(),
+                            post_onboarding,
+                        },
+                        Some(OnboardingProgress::from(&flow)),
+                    ),
+                    TransitionCommand::None,
+                )
             }
             (Self::SoftwareImport, OnboardingAction::SoftwareImportCompleted { wallet_id }) => (
                 Self::CloudBackup(CloudBackupFlow::SoftwareImport { wallet_id }),
                 TransitionCommand::None,
             ),
-            (Self::HardwareImport, OnboardingAction::HardwareImportCompleted { wallet_id }) => {
-                (Self::terms(TermsContext::SelectWallet(wallet_id), None), TransitionCommand::None)
-            }
+            (Self::HardwareImport, OnboardingAction::HardwareImportCompleted { wallet_id }) => (
+                Self::terms(
+                    TermsContext::SelectWallet {
+                        wallet_id,
+                        post_onboarding: PostOnboardingDestination::None,
+                    },
+                    None,
+                ),
+                TransitionCommand::None,
+            ),
             (Self::StorageChoice, OnboardingAction::OpenCloudRestore) => (
                 Self::restore_entry_for(cloud_restore_discovery, RestoreOrigin::StorageChoice),
                 TransitionCommand::None,
@@ -821,13 +868,6 @@ impl FlowState {
             (Self::Restoring { origin }, OnboardingAction::RestoreFailed { error }) => {
                 (Self::RestoreOffer { origin, error_message: Some(error) }, TransitionCommand::None)
             }
-            (Self::VerifyWords(flow), OnboardingAction::VerifyWordsCompleted) => (
-                Self::terms(
-                    TermsContext::SelectWallet(flow.wallet_id.clone()),
-                    Some(OnboardingProgress::from(&flow)),
-                ),
-                TransitionCommand::None,
-            ),
             (mut terms @ Self::Terms { .. }, OnboardingAction::AcceptTerms) => {
                 let command = terms.resolve_terms_acceptance(false);
                 (terms, command)
@@ -1066,12 +1106,6 @@ impl FlowState {
                 cloud_restore_discovery,
                 should_offer_cloud_restore,
             ),
-            Self::VerifyWords(flow) => Self::project_created_wallet(
-                OnboardingStep::VerifyWords,
-                flow,
-                cloud_restore_discovery,
-                should_offer_cloud_restore,
-            ),
             Self::ExchangeFunding(flow) => Self::project_created_wallet(
                 OnboardingStep::ExchangeFunding,
                 flow,
@@ -1101,13 +1135,12 @@ impl FlowState {
             Self::CreatingWallet(flow)
             | Self::BackupWallet(flow)
             | Self::SecretWords(flow)
-            | Self::VerifyWords(flow)
             | Self::ExchangeFunding(flow) => Some(flow.wallet_id.clone()),
             Self::CloudBackup(CloudBackupFlow::CreatedWallet(flow)) => Some(flow.wallet_id.clone()),
             Self::CloudBackup(CloudBackupFlow::SoftwareImport { wallet_id }) => {
                 Some(wallet_id.clone())
             }
-            Self::Terms { context: TermsContext::SelectWallet(wallet_id), .. } => {
+            Self::Terms { context: TermsContext::SelectWallet { wallet_id, .. }, .. } => {
                 Some(wallet_id.clone())
             }
             _ => None,
@@ -1120,7 +1153,6 @@ impl FlowState {
             | Self::BackupWallet(flow)
             | Self::CloudBackup(CloudBackupFlow::CreatedWallet(flow))
             | Self::SecretWords(flow)
-            | Self::VerifyWords(flow)
             | Self::ExchangeFunding(flow) => Some(flow.word_validator.clone()),
             _ => None,
         }
@@ -1179,9 +1211,8 @@ impl FlowState {
             | Self::BackupWallet(flow)
             | Self::CloudBackup(CloudBackupFlow::CreatedWallet(flow))
             | Self::SecretWords(flow)
-            | Self::VerifyWords(flow)
             | Self::ExchangeFunding(flow) => Some(OnboardingProgress::from(flow)),
-            Self::Terms { context: TermsContext::SelectWallet(_), progress, .. } => {
+            Self::Terms { context: TermsContext::SelectWallet { .. }, progress, .. } => {
                 progress.clone()
             }
             _ => None,
@@ -1193,8 +1224,11 @@ impl TermsContext {
     fn completion_target(&self) -> Option<CompletionTarget> {
         match self {
             Self::SelectLatestOrNew => Some(CompletionTarget::SelectLatestOrNew),
-            Self::SelectWallet(wallet_id) => {
-                Some(CompletionTarget::SelectWallet(wallet_id.clone()))
+            Self::SelectWallet { wallet_id, post_onboarding } => {
+                Some(CompletionTarget::SelectWallet {
+                    wallet_id: wallet_id.clone(),
+                    post_onboarding: *post_onboarding,
+                })
             }
             Self::StartupRestoreRecovery => None,
         }
@@ -1203,7 +1237,7 @@ impl TermsContext {
     fn next_flow_after_acceptance(&self) -> Option<FlowState> {
         match self {
             Self::StartupRestoreRecovery => Some(FlowState::Welcome { error_message: None }),
-            Self::SelectLatestOrNew | Self::SelectWallet(_) => None,
+            Self::SelectLatestOrNew | Self::SelectWallet { .. } => None,
         }
     }
 }
@@ -1465,9 +1499,75 @@ mod tests {
 
         assert_eq!(command, TransitionCommand::None);
         match flow {
-            FlowState::Terms { context: TermsContext::SelectWallet(id), .. } => {
+            FlowState::Terms {
+                context:
+                    TermsContext::SelectWallet {
+                        wallet_id: id,
+                        post_onboarding: PostOnboardingDestination::None,
+                    },
+                ..
+            } => {
                 assert_eq!(id, wallet_id)
             }
+            other => panic!("unexpected flow state: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn continue_from_backup_without_cloud_backup_goes_to_terms_with_verify_destination() {
+        let mut preview = preview_created_wallet_flow(OnboardingBranch::NewUser);
+        preview.secret_words_saved = true;
+
+        let wallet_id = preview.wallet_id.clone();
+        let mut flow = FlowState::BackupWallet(preview);
+        let mut restore_offer_allowed = false;
+
+        let command = flow.apply_user_action(
+            OnboardingAction::ContinueFromBackup,
+            CloudRestoreDiscovery::Checking,
+            &mut restore_offer_allowed,
+        );
+
+        assert_eq!(command, TransitionCommand::None);
+        match flow {
+            FlowState::Terms {
+                context:
+                    TermsContext::SelectWallet {
+                        wallet_id: id,
+                        post_onboarding: PostOnboardingDestination::VerifyWords,
+                    },
+                ..
+            } => assert_eq!(id, wallet_id),
+            other => panic!("unexpected flow state: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn continue_from_exchange_without_cloud_backup_goes_to_terms_with_verify_destination() {
+        let wallet_id = WalletId::new();
+        let mut flow = FlowState::ExchangeFunding(CreatedWalletFlow {
+            wallet_id: wallet_id.clone(),
+            branch: OnboardingBranch::Exchange,
+            ..preview_created_wallet_flow(OnboardingBranch::Exchange)
+        });
+        let mut restore_offer_allowed = false;
+
+        let command = flow.apply_user_action(
+            OnboardingAction::ContinueFromExchangeFunding,
+            CloudRestoreDiscovery::Checking,
+            &mut restore_offer_allowed,
+        );
+
+        assert_eq!(command, TransitionCommand::None);
+        match flow {
+            FlowState::Terms {
+                context:
+                    TermsContext::SelectWallet {
+                        wallet_id: id,
+                        post_onboarding: PostOnboardingDestination::VerifyWords,
+                    },
+                ..
+            } => assert_eq!(id, wallet_id),
             other => panic!("unexpected flow state: {other:?}"),
         }
     }
@@ -1713,18 +1813,27 @@ mod tests {
     #[test]
     fn auto_accepting_terminal_terms_triggers_completion() {
         let wallet_id = WalletId::new();
-        let mut flow = FlowState::terms(TermsContext::SelectWallet(wallet_id.clone()), None);
+        let mut flow = FlowState::terms(
+            TermsContext::SelectWallet {
+                wallet_id: wallet_id.clone(),
+                post_onboarding: PostOnboardingDestination::VerifyWords,
+            },
+            None,
+        );
 
         let command = flow.resolve_terms_acceptance(true);
 
         assert_eq!(
             command,
-            TransitionCommand::CompleteOnboarding(CompletionTarget::SelectWallet(wallet_id))
+            TransitionCommand::CompleteOnboarding(CompletionTarget::SelectWallet {
+                wallet_id,
+                post_onboarding: PostOnboardingDestination::VerifyWords,
+            })
         );
         assert!(matches!(
             flow,
             FlowState::Terms {
-                context: TermsContext::SelectWallet(_),
+                context: TermsContext::SelectWallet { .. },
                 error_message: None,
                 progress: None,
                 allow_auto_advance: false,
@@ -1853,7 +1962,10 @@ mod tests {
     #[test]
     fn completion_failure_sets_terms_error_without_completing() {
         let mut flow = FlowState::Terms {
-            context: TermsContext::SelectWallet(WalletId::new()),
+            context: TermsContext::SelectWallet {
+                wallet_id: WalletId::new(),
+                post_onboarding: PostOnboardingDestination::None,
+            },
             error_message: None,
             progress: None,
             allow_auto_advance: false,
