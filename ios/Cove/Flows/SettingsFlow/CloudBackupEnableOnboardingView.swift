@@ -3,6 +3,8 @@ import SwiftUI
 struct CloudBackupEnableOnboardingView: View {
     let onEnable: () -> Void
     let onCancel: () -> Void
+    let message: String?
+    let isBusy: Bool
 
     @State private var checks: [Bool] = Array(repeating: false, count: 3)
 
@@ -22,6 +24,9 @@ struct CloudBackupEnableOnboardingView: View {
 
                     Divider().overlay(Color.coveLightGray.opacity(0.50))
                     infoCard
+                    if let message {
+                        OnboardingInlineMessage(text: message)
+                    }
                     checkboxSection
                     enableButton
 
@@ -32,6 +37,7 @@ struct CloudBackupEnableOnboardingView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(backgroundView)
+        .allowsHitTesting(!isBusy)
     }
 
     private var cancelButton: some View {
@@ -40,6 +46,7 @@ struct CloudBackupEnableOnboardingView: View {
             Button("Cancel") { onCancel() }
                 .foregroundStyle(.white)
                 .font(.headline)
+                .disabled(isBusy)
         }
         .padding(.horizontal)
         .padding(.top)
@@ -157,7 +164,7 @@ struct CloudBackupEnableOnboardingView: View {
             Text("Enable Cloud Backup")
         }
         .buttonStyle(OnboardingPrimaryButtonStyle())
-        .disabled(!allChecked)
+        .disabled(!allChecked || isBusy)
         .animation(.easeInOut(duration: 0.2), value: allChecked)
     }
 
@@ -226,6 +233,8 @@ struct DarkCheckboxToggleStyle: ToggleStyle {
 #Preview {
     CloudBackupEnableOnboardingView(
         onEnable: {},
-        onCancel: {}
+        onCancel: {},
+        message: nil,
+        isBusy: false
     )
 }

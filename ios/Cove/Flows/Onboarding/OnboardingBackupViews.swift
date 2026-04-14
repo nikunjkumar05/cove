@@ -168,40 +168,96 @@ struct OnboardingSecretWordsView: View {
 struct OnboardingCloudBackupStepView: View {
     @State private var backupManager = CloudBackupManager.shared
     @State private var didComplete = false
+    @State private var isStartingEnable = false
 
     let onEnabled: () -> Void
     let onSkip: () -> Void
+
+    private var onboardingMessage: String? {
+        switch backupManager.status {
+        case .unsupportedPasskeyProvider:
+            "This passkey provider did not confirm PRF support for Cloud Backup. Try Apple Passwords (iCloud Keychain) or another supported provider such as 1Password"
+        case let .error(message):
+            message
+        default:
+            nil
+        }
+    }
+
+    private var isBusy: Bool {
+        isStartingEnable || {
+            if case .enabling = backupManager.status { true } else { false }
+        }()
+    }
 
     var body: some View {
         ZStack {
             CloudBackupEnableOnboardingView(
                 onEnable: {
+                    guard !isBusy else { return }
+                    isStartingEnable = true
                     backupManager.dispatch(action: .enableCloudBackupNoDiscovery)
                 },
-                onCancel: onSkip
+                onCancel: onSkip,
+                message: onboardingMessage,
+                isBusy: isBusy
             )
 
-            if case .enabling = backupManager.status {
-                Color.black.opacity(0.35)
+            if isBusy {
+                Color.black.opacity(0.55)
                     .ignoresSafeArea()
 
-                VStack(spacing: 12) {
+                VStack(spacing: 14) {
                     ProgressView()
                         .tint(.white)
-                    Text("Enabling Cloud Backup")
+                    Text("Waiting for your new passkey to become available...")
                         .font(.headline)
                         .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                    Text("Cloud Backup will continue automatically")
+                        .font(.subheadline)
+                        .foregroundStyle(.coveLightGray)
+                        .multilineTextAlignment(.center)
                 }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 20)
+                .frame(maxWidth: 320)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(Color.midnightBlue.opacity(0.96))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.35), radius: 20, y: 10)
             }
         }
+        .task {
+            completeIfEnabled()
+        }
         .onChange(of: backupManager.status, initial: true) { _, status in
-            completeIfEnabled(status)
+            if case .enabling = status {
+                isStartingEnable = false
+            } else if isStartingEnable {
+                isStartingEnable = false
+            }
+            completeIfEnabled(status: status)
+        }
+        .onChange(of: backupManager.isConfigured) { _, _ in
+            completeIfEnabled()
         }
     }
 
-    private func completeIfEnabled(_ status: CloudBackupStatus) {
+    private func completeIfEnabled(status: CloudBackupStatus? = nil) {
         guard !didComplete else { return }
-        guard case .enabled = status else { return }
+        let currentStatus = status ?? backupManager.status
+        let isEnabled = if case .enabled = currentStatus {
+            true
+        } else {
+            backupManager.isCloudBackupEnabled
+        }
+        guard isEnabled else { return }
         didComplete = true
         onEnabled()
     }
