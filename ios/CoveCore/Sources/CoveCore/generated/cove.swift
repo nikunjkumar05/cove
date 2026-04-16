@@ -10227,6 +10227,14 @@ public protocol TransactionDetailsProtocol: AnyObject, Sendable {
     
     func isConfirmed()  -> Bool
     
+    /**
+     * Whether the transaction signals opt-in Replace-By-Fee (BIP 125).
+     *
+     * Returns `true` when at least one input has `nSequence < 0xFFFFFFFE`,
+     * indicating the sender opted in to fee replacement while unconfirmed.
+     */
+    func isRbfSignaling()  -> Bool
+    
     func isReceived()  -> Bool
     
     func isSent()  -> Bool
@@ -10507,6 +10515,20 @@ open func historicalFiatFmtCached() -> String?  {
 open func isConfirmed() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
     uniffi_cove_fn_method_transactiondetails_is_confirmed(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Whether the transaction signals opt-in Replace-By-Fee (BIP 125).
+     *
+     * Returns `true` when at least one input has `nSequence < 0xFFFFFFFE`,
+     * indicating the sender opted in to fee replacement while unconfirmed.
+     */
+open func isRbfSignaling() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_cove_fn_method_transactiondetails_is_rbf_signaling(
             self.uniffiCloneHandle(),$0
     )
 })
@@ -23306,6 +23328,7 @@ enum MultiFormatError: Swift.Error, Equatable, Hashable, Foundation.LocalizedErr
     case InvalidTapSigner(TapCardParseError
     )
     case TaprootNotSupported
+    case PsbtNotSigned
 
     
 
@@ -23354,6 +23377,7 @@ public struct FfiConverterTypeMultiFormatError: FfiConverterRustBuffer {
             try FfiConverterTypeTapCardParseError.read(from: &buf)
             )
         case 5: return .TaprootNotSupported
+        case 6: return .PsbtNotSigned
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -23386,6 +23410,10 @@ public struct FfiConverterTypeMultiFormatError: FfiConverterRustBuffer {
         
         case .TaprootNotSupported:
             writeInt(&buf, Int32(5))
+        
+        
+        case .PsbtNotSigned:
+            writeInt(&buf, Int32(6))
         
         }
     }
@@ -27861,6 +27889,8 @@ enum SignedImportError: Swift.Error, Equatable, Hashable, Foundation.LocalizedEr
     
     case UnrecognizedFormat(message: String)
     
+    case NotSigned(message: String)
+    
 
     
 
@@ -27906,6 +27936,10 @@ public struct FfiConverterTypeSignedImportError: FfiConverterRustBuffer {
             message: try FfiConverterString.read(from: &buf)
         )
         
+        case 5: return .NotSigned(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -27925,6 +27959,8 @@ public struct FfiConverterTypeSignedImportError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(3))
         case .UnrecognizedFormat(_ /* message is ignored*/):
             writeInt(&buf, Int32(4))
+        case .NotSigned(_ /* message is ignored*/):
+            writeInt(&buf, Int32(5))
 
         
         }
@@ -36993,6 +37029,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_transactiondetails_is_confirmed() != 13728) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_cove_checksum_method_transactiondetails_is_rbf_signaling() != 22881) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_cove_checksum_method_transactiondetails_is_received() != 28034) {
