@@ -38,8 +38,6 @@ final class OnboardingManager: AnyReconciler, OnboardingManagerReconciler, @unch
                 applyStep(step)
             case let .branch(branch):
                 state.branch = branch
-            case let .hardwareDevice(device):
-                state.hardwareDevice = device
             case let .createdWords(words):
                 state.createdWords = words
             case let .cloudBackupEnabled(enabled):

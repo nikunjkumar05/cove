@@ -40,7 +40,7 @@ struct CoveApp: App {
     enum StartupState {
         case loading
         case ready(AppManager, AuthManager)
-        case onboarding(AppManager, AuthManager)
+        case onboarding(AppManager, AuthManager, OnboardingManager)
         case catastrophicError
         case fatalError(String)
     }
@@ -112,8 +112,8 @@ extension CoveApp {
             CoverView(errorMessage: nil)
         case let .ready(app, auth):
             CoveMainView(app: app, auth: auth)
-        case let .onboarding(app, auth):
-            OnboardingContainer(manager: OnboardingManager(app: app), auth: auth) {
+        case let .onboarding(app, auth, manager):
+            OnboardingContainer(manager: manager, auth: auth) {
                 startupState = .ready(app, auth)
                 startBackupIntegrityCheck()
             }
@@ -243,7 +243,11 @@ extension CoveApp {
 
         if needsOnboarding {
             Log.info("[STARTUP] entering onboarding flow")
-            self.startupState = .onboarding(appManager, AuthManager.shared)
+            self.startupState = .onboarding(
+                appManager,
+                AuthManager.shared,
+                OnboardingManager(app: appManager)
+            )
         } else {
             Log.info("[STARTUP] going to ready state")
             self.startupState = .ready(appManager, AuthManager.shared)

@@ -28528,8 +28528,6 @@ data class OnboardingState (
     , 
     var `branch`: OnboardingBranch?
     , 
-    var `hardwareDevice`: OnboardingHardwareDevice?
-    , 
     var `createdWords`: List<kotlin.String>
     , 
     var `cloudBackupEnabled`: kotlin.Boolean
@@ -28561,7 +28559,6 @@ public object FfiConverterTypeOnboardingState: FfiConverterRustBuffer<Onboarding
         return OnboardingState(
             FfiConverterTypeOnboardingStep.read(buf),
             FfiConverterOptionalTypeOnboardingBranch.read(buf),
-            FfiConverterOptionalTypeOnboardingHardwareDevice.read(buf),
             FfiConverterSequenceString.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
@@ -28575,7 +28572,6 @@ public object FfiConverterTypeOnboardingState: FfiConverterRustBuffer<Onboarding
     override fun allocationSize(value: OnboardingState) = (
             FfiConverterTypeOnboardingStep.allocationSize(value.`step`) +
             FfiConverterOptionalTypeOnboardingBranch.allocationSize(value.`branch`) +
-            FfiConverterOptionalTypeOnboardingHardwareDevice.allocationSize(value.`hardwareDevice`) +
             FfiConverterSequenceString.allocationSize(value.`createdWords`) +
             FfiConverterBoolean.allocationSize(value.`cloudBackupEnabled`) +
             FfiConverterBoolean.allocationSize(value.`secretWordsSaved`) +
@@ -28588,7 +28584,6 @@ public object FfiConverterTypeOnboardingState: FfiConverterRustBuffer<Onboarding
     override fun write(value: OnboardingState, buf: ByteBuffer) {
             FfiConverterTypeOnboardingStep.write(value.`step`, buf)
             FfiConverterOptionalTypeOnboardingBranch.write(value.`branch`, buf)
-            FfiConverterOptionalTypeOnboardingHardwareDevice.write(value.`hardwareDevice`, buf)
             FfiConverterSequenceString.write(value.`createdWords`, buf)
             FfiConverterBoolean.write(value.`cloudBackupEnabled`, buf)
             FfiConverterBoolean.write(value.`secretWordsSaved`, buf)
@@ -40364,15 +40359,6 @@ sealed class OnboardingAction {
     object ContinueFromExchangeFunding : OnboardingAction()
     
     
-    data class SelectHardwareDevice(
-        val `device`: org.bitcoinppl.cove_core.OnboardingHardwareDevice) : OnboardingAction()
-        
-    {
-        
-
-        companion object
-    }
-    
     data class SoftwareImportCompleted(
         val `walletId`: org.bitcoinppl.cove_core.types.WalletId) : OnboardingAction()
         
@@ -40414,9 +40400,6 @@ sealed class OnboardingAction {
 
         companion object
     }
-    
-    object VerifyWordsCompleted : OnboardingAction()
-    
     
     object AcceptTerms : OnboardingAction()
     
@@ -40461,26 +40444,22 @@ public object FfiConverterTypeOnboardingAction : FfiConverterRustBuffer<Onboardi
             11 -> OnboardingAction.SkipCloudBackup
             12 -> OnboardingAction.ContinueFromBackup
             13 -> OnboardingAction.ContinueFromExchangeFunding
-            14 -> OnboardingAction.SelectHardwareDevice(
-                FfiConverterTypeOnboardingHardwareDevice.read(buf),
-                )
-            15 -> OnboardingAction.SoftwareImportCompleted(
+            14 -> OnboardingAction.SoftwareImportCompleted(
                 FfiConverterTypeWalletId.read(buf),
                 )
-            16 -> OnboardingAction.HardwareImportCompleted(
+            15 -> OnboardingAction.HardwareImportCompleted(
                 FfiConverterTypeWalletId.read(buf),
                 )
-            17 -> OnboardingAction.OpenCloudRestore
-            18 -> OnboardingAction.StartRestore
-            19 -> OnboardingAction.SkipRestore
-            20 -> OnboardingAction.ContinueWithoutCloudRestore
-            21 -> OnboardingAction.RestoreComplete
-            22 -> OnboardingAction.RestoreFailed(
+            16 -> OnboardingAction.OpenCloudRestore
+            17 -> OnboardingAction.StartRestore
+            18 -> OnboardingAction.SkipRestore
+            19 -> OnboardingAction.ContinueWithoutCloudRestore
+            20 -> OnboardingAction.RestoreComplete
+            21 -> OnboardingAction.RestoreFailed(
                 FfiConverterString.read(buf),
                 )
-            23 -> OnboardingAction.VerifyWordsCompleted
-            24 -> OnboardingAction.AcceptTerms
-            25 -> OnboardingAction.Back
+            22 -> OnboardingAction.AcceptTerms
+            23 -> OnboardingAction.Back
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -40568,13 +40547,6 @@ public object FfiConverterTypeOnboardingAction : FfiConverterRustBuffer<Onboardi
                 4UL
             )
         }
-        is OnboardingAction.SelectHardwareDevice -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-                + FfiConverterTypeOnboardingHardwareDevice.allocationSize(value.`device`)
-            )
-        }
         is OnboardingAction.SoftwareImportCompleted -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -40624,12 +40596,6 @@ public object FfiConverterTypeOnboardingAction : FfiConverterRustBuffer<Onboardi
             (
                 4UL
                 + FfiConverterString.allocationSize(value.`error`)
-            )
-        }
-        is OnboardingAction.VerifyWordsCompleted -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
             )
         }
         is OnboardingAction.AcceptTerms -> {
@@ -40704,56 +40670,47 @@ public object FfiConverterTypeOnboardingAction : FfiConverterRustBuffer<Onboardi
                 buf.putInt(13)
                 Unit
             }
-            is OnboardingAction.SelectHardwareDevice -> {
-                buf.putInt(14)
-                FfiConverterTypeOnboardingHardwareDevice.write(value.`device`, buf)
-                Unit
-            }
             is OnboardingAction.SoftwareImportCompleted -> {
-                buf.putInt(15)
+                buf.putInt(14)
                 FfiConverterTypeWalletId.write(value.`walletId`, buf)
                 Unit
             }
             is OnboardingAction.HardwareImportCompleted -> {
-                buf.putInt(16)
+                buf.putInt(15)
                 FfiConverterTypeWalletId.write(value.`walletId`, buf)
                 Unit
             }
             is OnboardingAction.OpenCloudRestore -> {
-                buf.putInt(17)
+                buf.putInt(16)
                 Unit
             }
             is OnboardingAction.StartRestore -> {
-                buf.putInt(18)
+                buf.putInt(17)
                 Unit
             }
             is OnboardingAction.SkipRestore -> {
-                buf.putInt(19)
+                buf.putInt(18)
                 Unit
             }
             is OnboardingAction.ContinueWithoutCloudRestore -> {
-                buf.putInt(20)
+                buf.putInt(19)
                 Unit
             }
             is OnboardingAction.RestoreComplete -> {
-                buf.putInt(21)
+                buf.putInt(20)
                 Unit
             }
             is OnboardingAction.RestoreFailed -> {
-                buf.putInt(22)
+                buf.putInt(21)
                 FfiConverterString.write(value.`error`, buf)
                 Unit
             }
-            is OnboardingAction.VerifyWordsCompleted -> {
-                buf.putInt(23)
-                Unit
-            }
             is OnboardingAction.AcceptTerms -> {
-                buf.putInt(24)
+                buf.putInt(22)
                 Unit
             }
             is OnboardingAction.Back -> {
-                buf.putInt(25)
+                buf.putInt(23)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -40837,42 +40794,6 @@ public object FfiConverterTypeOnboardingCloudRestoreState: FfiConverterRustBuffe
 
 
 
-
-enum class OnboardingHardwareDevice {
-    
-    COLDCARD,
-    LEDGER,
-    TREZOR,
-    OTHER;
-
-    
-
-
-    companion object
-}
-
-
-/**
- * @suppress
- */
-public object FfiConverterTypeOnboardingHardwareDevice: FfiConverterRustBuffer<OnboardingHardwareDevice> {
-    override fun read(buf: ByteBuffer) = try {
-        OnboardingHardwareDevice.values()[buf.getInt() - 1]
-    } catch (e: IndexOutOfBoundsException) {
-        throw RuntimeException("invalid enum value, something is very wrong!!", e)
-    }
-
-    override fun allocationSize(value: OnboardingHardwareDevice) = 4UL
-
-    override fun write(value: OnboardingHardwareDevice, buf: ByteBuffer) {
-        buf.putInt(value.ordinal + 1)
-    }
-}
-
-
-
-
-
 sealed class OnboardingReconcileMessage {
     
     data class Step(
@@ -40886,15 +40807,6 @@ sealed class OnboardingReconcileMessage {
     
     data class Branch(
         val v1: org.bitcoinppl.cove_core.OnboardingBranch?) : OnboardingReconcileMessage()
-        
-    {
-        
-
-        companion object
-    }
-    
-    data class HardwareDevice(
-        val v1: org.bitcoinppl.cove_core.OnboardingHardwareDevice?) : OnboardingReconcileMessage()
         
     {
         
@@ -40990,31 +40902,28 @@ public object FfiConverterTypeOnboardingReconcileMessage : FfiConverterRustBuffe
             2 -> OnboardingReconcileMessage.Branch(
                 FfiConverterOptionalTypeOnboardingBranch.read(buf),
                 )
-            3 -> OnboardingReconcileMessage.HardwareDevice(
-                FfiConverterOptionalTypeOnboardingHardwareDevice.read(buf),
-                )
-            4 -> OnboardingReconcileMessage.CreatedWords(
+            3 -> OnboardingReconcileMessage.CreatedWords(
                 FfiConverterSequenceString.read(buf),
                 )
-            5 -> OnboardingReconcileMessage.CloudBackupEnabled(
+            4 -> OnboardingReconcileMessage.CloudBackupEnabled(
                 FfiConverterBoolean.read(buf),
                 )
-            6 -> OnboardingReconcileMessage.SecretWordsSaved(
+            5 -> OnboardingReconcileMessage.SecretWordsSaved(
                 FfiConverterBoolean.read(buf),
                 )
-            7 -> OnboardingReconcileMessage.CloudRestoreState(
+            6 -> OnboardingReconcileMessage.CloudRestoreState(
                 FfiConverterTypeOnboardingCloudRestoreState.read(buf),
                 )
-            8 -> OnboardingReconcileMessage.CloudRestoreMessageChanged(
+            7 -> OnboardingReconcileMessage.CloudRestoreMessageChanged(
                 FfiConverterOptionalString.read(buf),
                 )
-            9 -> OnboardingReconcileMessage.ShouldOfferCloudRestore(
+            8 -> OnboardingReconcileMessage.ShouldOfferCloudRestore(
                 FfiConverterBoolean.read(buf),
                 )
-            10 -> OnboardingReconcileMessage.ErrorMessageChanged(
+            9 -> OnboardingReconcileMessage.ErrorMessageChanged(
                 FfiConverterOptionalString.read(buf),
                 )
-            11 -> OnboardingReconcileMessage.Complete
+            10 -> OnboardingReconcileMessage.Complete
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -41032,13 +40941,6 @@ public object FfiConverterTypeOnboardingReconcileMessage : FfiConverterRustBuffe
             (
                 4UL
                 + FfiConverterOptionalTypeOnboardingBranch.allocationSize(value.v1)
-            )
-        }
-        is OnboardingReconcileMessage.HardwareDevice -> {
-            // Add the size for the Int that specifies the variant plus the size needed for all fields
-            (
-                4UL
-                + FfiConverterOptionalTypeOnboardingHardwareDevice.allocationSize(value.v1)
             )
         }
         is OnboardingReconcileMessage.CreatedWords -> {
@@ -41110,48 +41012,43 @@ public object FfiConverterTypeOnboardingReconcileMessage : FfiConverterRustBuffe
                 FfiConverterOptionalTypeOnboardingBranch.write(value.v1, buf)
                 Unit
             }
-            is OnboardingReconcileMessage.HardwareDevice -> {
-                buf.putInt(3)
-                FfiConverterOptionalTypeOnboardingHardwareDevice.write(value.v1, buf)
-                Unit
-            }
             is OnboardingReconcileMessage.CreatedWords -> {
-                buf.putInt(4)
+                buf.putInt(3)
                 FfiConverterSequenceString.write(value.v1, buf)
                 Unit
             }
             is OnboardingReconcileMessage.CloudBackupEnabled -> {
-                buf.putInt(5)
+                buf.putInt(4)
                 FfiConverterBoolean.write(value.v1, buf)
                 Unit
             }
             is OnboardingReconcileMessage.SecretWordsSaved -> {
-                buf.putInt(6)
+                buf.putInt(5)
                 FfiConverterBoolean.write(value.v1, buf)
                 Unit
             }
             is OnboardingReconcileMessage.CloudRestoreState -> {
-                buf.putInt(7)
+                buf.putInt(6)
                 FfiConverterTypeOnboardingCloudRestoreState.write(value.v1, buf)
                 Unit
             }
             is OnboardingReconcileMessage.CloudRestoreMessageChanged -> {
-                buf.putInt(8)
+                buf.putInt(7)
                 FfiConverterOptionalString.write(value.v1, buf)
                 Unit
             }
             is OnboardingReconcileMessage.ShouldOfferCloudRestore -> {
-                buf.putInt(9)
+                buf.putInt(8)
                 FfiConverterBoolean.write(value.v1, buf)
                 Unit
             }
             is OnboardingReconcileMessage.ErrorMessageChanged -> {
-                buf.putInt(10)
+                buf.putInt(9)
                 FfiConverterOptionalString.write(value.v1, buf)
                 Unit
             }
             is OnboardingReconcileMessage.Complete -> {
-                buf.putInt(11)
+                buf.putInt(10)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -41246,9 +41143,7 @@ enum class OnboardingStep {
     BACKUP_WALLET,
     CLOUD_BACKUP,
     SECRET_WORDS,
-    VERIFY_WORDS,
     EXCHANGE_FUNDING,
-    HARDWARE_DEVICE_SELECTION,
     HARDWARE_IMPORT,
     SOFTWARE_IMPORT,
     TERMS;
@@ -53278,38 +53173,6 @@ public object FfiConverterOptionalTypeOnboardingBranch: FfiConverterRustBuffer<O
         } else {
             buf.put(1)
             FfiConverterTypeOnboardingBranch.write(value, buf)
-        }
-    }
-}
-
-
-
-
-/**
- * @suppress
- */
-public object FfiConverterOptionalTypeOnboardingHardwareDevice: FfiConverterRustBuffer<OnboardingHardwareDevice?> {
-    override fun read(buf: ByteBuffer): OnboardingHardwareDevice? {
-        if (buf.get().toInt() == 0) {
-            return null
-        }
-        return FfiConverterTypeOnboardingHardwareDevice.read(buf)
-    }
-
-    override fun allocationSize(value: OnboardingHardwareDevice?): ULong {
-        if (value == null) {
-            return 1UL
-        } else {
-            return 1UL + FfiConverterTypeOnboardingHardwareDevice.allocationSize(value)
-        }
-    }
-
-    override fun write(value: OnboardingHardwareDevice?, buf: ByteBuffer) {
-        if (value == null) {
-            buf.put(0)
-        } else {
-            buf.put(1)
-            FfiConverterTypeOnboardingHardwareDevice.write(value, buf)
         }
     }
 }

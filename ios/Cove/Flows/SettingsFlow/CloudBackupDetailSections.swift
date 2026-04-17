@@ -343,15 +343,12 @@ private struct CloudOnlyActionDialogs: ViewModifier {
 struct WalletSections: View {
     let wallets: [CloudBackupWalletItem]
 
-    private let groupedWallets: GroupedWalletSections
-
-    init(wallets: [CloudBackupWalletItem]) {
-        self.wallets = wallets
-        groupedWallets = GroupedWalletSections(wallets: wallets)
+    private var groupedWallets: [GroupedWalletSections.Section] {
+        GroupedWalletSections(wallets: wallets).sections
     }
 
     var body: some View {
-        ForEach(groupedWallets.sections) { group in
+        ForEach(groupedWallets) { group in
             Section(header: sectionHeader(for: group.key)) {
                 ForEach(group.items, id: \.recordId) { item in
                     WalletItemRow(item: item)

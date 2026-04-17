@@ -1,15 +1,9 @@
 import SwiftUI
 
 struct OnboardingContainer: View {
-    @State private var manager: OnboardingManager
+    let manager: OnboardingManager
     let auth: AuthManager
     let onComplete: () -> Void
-
-    init(manager: OnboardingManager, auth: AuthManager, onComplete: @escaping () -> Void) {
-        _manager = State(initialValue: manager)
-        self.auth = auth
-        self.onComplete = onComplete
-    }
 
     var body: some View {
         CloudBackupPresentationHost(
@@ -131,6 +125,7 @@ struct OnboardingContainer: View {
 
         case .cloudBackup:
             OnboardingCloudBackupStepView(
+                branch: manager.state.branch,
                 onEnabled: { manager.dispatch(.cloudBackupEnabled) },
                 onSkip: { manager.dispatch(.skipCloudBackup) }
             )
@@ -142,38 +137,14 @@ struct OnboardingContainer: View {
                 onSaved: { manager.dispatch(.secretWordsSaved) }
             )
 
-        case .verifyWords:
-            if let walletId = manager.rust.currentWalletId() {
-                VerifyWordsContainer(
-                    id: walletId,
-                    onVerified: { manager.dispatch(.verifyWordsCompleted) }
-                )
-            } else {
-                OnboardingErrorScreen(
-                    title: "Unable to verify words",
-                    message: "The wallet was created, but the verification state could not be loaded."
-                )
-            }
-
         case .exchangeFunding:
             OnboardingExchangeFundingView(
                 walletId: manager.rust.currentWalletId(),
                 onContinue: { manager.dispatch(.continueFromExchangeFunding) }
             )
 
-        case .hardwareDeviceSelection:
-            OnboardingHardwareDeviceSelectionScreen(
-                selectedDevice: manager.state.hardwareDevice,
-                onRestoreFromCoveBackup: onOpenCloudRestore,
-                onSelect: { device in
-                    manager.dispatch(.selectHardwareDevice(device: device))
-                },
-                onBack: { manager.dispatch(.back) }
-            )
-
         case .hardwareImport:
             OnboardingHardwareImportFlowView(
-                device: manager.state.hardwareDevice,
                 onImported: { walletId in
                     manager.dispatch(.hardwareImportCompleted(walletId: walletId))
                 },
